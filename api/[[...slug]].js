@@ -23,6 +23,10 @@ const expressHandler = serverless(app);
 //   2. Pipes the request through Express via serverless-http.
 //   3. Returns the response Vercel needs.
 export default async function handler(req, res) {
+  if (req.url === '/api/health' || req.url?.startsWith('/api/health?')) {
+    return expressHandler(req, res);
+  }
+
   try {
     await prepareApp();
   } catch (err) {

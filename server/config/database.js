@@ -19,7 +19,7 @@ export async function connectDB() {
     .connect(uri, {
       // Atlas replica-set discovery can be slow on variable-latency ISPs —
       // allow ~30s before we declare defeat. Our test script is our canary.
-      serverSelectionTimeoutMS: 30_000,
+      serverSelectionTimeoutMS: 10_000,
       socketTimeoutMS: 45_000,
       maxPoolSize: 20,
       retryWrites: true,

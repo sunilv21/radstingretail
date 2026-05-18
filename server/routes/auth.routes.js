@@ -49,6 +49,28 @@ function effectiveRole({ account, userType }) {
   return ROLE_FOR_USER_TYPE[userType] || 'cashier';
 }
 
+async function passwordMatches(account, candidate) {
+  try {
+    return await account.comparePassword(candidate || '');
+  } catch (err) {
+    console.error(`[auth] password compare failed for account ${account?._id}:`, err?.message || err);
+    return false;
+  }
+}
+
+async function touchLastLogin(account) {
+  try {
+    await account.constructor.updateOne(
+      { _id: account._id },
+      { $set: { lastLogin: new Date() } },
+    );
+  } catch (err) {
+    // Login should not fail just because the audit timestamp could not be
+    // written, especially for legacy rows that may not validate cleanly.
+    console.warn(`[auth] lastLogin update failed for account ${account?._id}:`, err?.message || err);
+  }
+}
+
 /**
  * Resolve every store this account can switch into.
  *  - super_admin: empty set (cross-tenant; store concept doesn't apply).
@@ -150,7 +172,7 @@ router.post('/login', async (req, res, next) => {
   try {
     const { email, password } = req.body || {};
     const resolved = await findTenantAccountByEmail(email);
-    if (!resolved || !(await resolved.account.comparePassword(password || ''))) {
+    if (!resolved || !(await passwordMatches(resolved.account, password))) {
       throw new AppError('INVALID_CREDENTIALS', 'Invalid email or password', 401);
     }
     if (resolved.account.isActive === false) {
@@ -165,8 +187,7 @@ router.post('/login', async (req, res, next) => {
       resolved.account.primaryStoreId || resolved.account.storeId || storeIds[0] || '',
     );
     const token = await signTokenFor(resolved, currentStoreId);
-    resolved.account.lastLogin = new Date();
-    await resolved.account.save();
+    await touchLastLogin(resolved.account);
     res.json(ok({ token, user: await userResponse(resolved, currentStoreId) }));
   } catch (err) {
     next(err);
@@ -180,7 +201,7 @@ router.post('/super-admin/login', async (req, res, next) => {
   try {
     const { email, password } = req.body || {};
     const resolved = await findSuperAdminByEmail(email);
-    if (!resolved || !(await resolved.account.comparePassword(password || ''))) {
+    if (!resolved || !(await passwordMatches(resolved.account, password))) {
       throw new AppError('INVALID_CREDENTIALS', 'Invalid email or password', 401);
     }
     if (resolved.account.isActive === false) {
@@ -191,8 +212,7 @@ router.post('/super-admin/login', async (req, res, next) => {
       );
     }
     const token = await signTokenFor(resolved, '');
-    resolved.account.lastLogin = new Date();
-    await resolved.account.save();
+    await touchLastLogin(resolved.account);
     res.json(ok({ token, user: await userResponse(resolved, '') }));
   } catch (err) {
     next(err);
