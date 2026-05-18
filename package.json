@@ -8,7 +8,7 @@
     "dev:server": "node --watch server/index.js",
     "dev:web": "next dev -p 3000",
     "dev:tunnel": "ngrok http 5000",
-    "build": "next build",
+    "build": "node scripts/next-build.mjs",
     "start": "concurrently -n server,web -c blue,green \"node server/index.js\" \"next start -p 3000\"",
     "lint": "next lint"
   },
