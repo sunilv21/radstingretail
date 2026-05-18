@@ -50,8 +50,20 @@ export function errorHandler(err, req, res, _next) {
   // Catch-all. Log full stack server-side, return a sanitised message.
   console.error(`[unhandled_error] ${req?.method || ''} ${req?.originalUrl || ''}`);
   console.error(err?.stack || err);
-  const exposeMessage = !isProd && err?.message ? err.message : 'Something went wrong on our side';
-  res.status(500).json(fail('INTERNAL_ERROR', exposeMessage));
+  // Default: hide internal error text in prod. Operator escape hatch:
+  // set DEBUG_API_ERRORS=1 in env (Vercel project → Settings → Env Vars,
+  // then redeploy) to surface the real message + first stack frame so
+  // production 500s can be triaged without trawling function logs. Turn
+  // it off once the bug is found — error messages can leak schema names,
+  // file paths, and secret-shaped strings.
+  const debugErrors = process.env.DEBUG_API_ERRORS === '1';
+  const exposeMessage = !isProd || debugErrors
+    ? err?.message || 'Something went wrong on our side'
+    : 'Something went wrong on our side';
+  const details = debugErrors && err?.stack
+    ? { stack: String(err.stack).split('\n').slice(0, 6).map((s) => s.trim()) }
+    : undefined;
+  res.status(500).json(fail('INTERNAL_ERROR', exposeMessage, details));
 }
 
 export function notFoundHandler(_req, res) {
