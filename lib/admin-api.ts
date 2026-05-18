@@ -8,10 +8,14 @@
  * All requests target the single backend at `NEXT_PUBLIC_API_URL`. The legacy
  * `NEXT_PUBLIC_API_BASE_URL` is honoured as a fallback for older envs.
  */
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ||
-  process.env.NEXT_PUBLIC_API_BASE_URL ||
-  'http://localhost:5000/api'
+function resolveApiBase() {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL
+  if (process.env.NEXT_PUBLIC_API_BASE_URL) return process.env.NEXT_PUBLIC_API_BASE_URL
+  if (typeof window !== 'undefined') return '/api'
+  return 'http://localhost:5000/api'
+}
+
+export const API_BASE = resolveApiBase()
 
 export class ApiError extends Error {
   status: number
