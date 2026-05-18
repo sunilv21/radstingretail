@@ -19,13 +19,5 @@
       "maxDuration": 30,
       "memory": 1024
     },
-    "api/[...slug].js": {
-      "maxDuration": 30,
-      "memory": 1024
-    },
-    "api/[[...slug]].js": {
-      "maxDuration": 30,
-      "memory": 1024
-    }
   }
 }
