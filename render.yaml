@@ -1,0 +1,40 @@
+# Render blueprint — one-click deploy for the Radsting POS API server.
+#
+# How to use:
+#   1. Push this repo to GitHub (already done).
+#   2. Go to https://dashboard.render.com → "New +" → "Blueprint".
+#   3. Connect your GitHub account and pick this repo.
+#   4. Render reads this file and creates the service automatically.
+#   5. Set the four secrets below in the Render dashboard (Render will
+#      prompt for them on first deploy because they're marked sync: false).
+#
+# After the first successful deploy, Render gives you a URL like
+#   https://radsting-pos-api.onrender.com
+# Set NEXT_PUBLIC_API_URL on Vercel to <that URL>/api and redeploy the
+# Vercel project. The frontend will then talk to your live API.
+
+services:
+  - type: web
+    name: radsting-pos-api
+    runtime: node
+    plan: free
+    region: singapore             # closest Render region to India; switch if you prefer
+    branch: main
+    rootDir: .
+    buildCommand: npm install --production=false
+    startCommand: node server/index.js
+    healthCheckPath: /api/health
+    autoDeploy: true              # redeploys on every push to main
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000              # Render injects $PORT but server reads process.env.PORT directly
+      - key: MONGODB_URI
+        sync: false               # set in dashboard — never commit the Atlas URI
+      - key: JWT_SECRET
+        sync: false               # set in dashboard — paste the 64-byte hex secret from .env
+      - key: CORS_ORIGIN
+        sync: false               # set to https://retail-pos-radsting.vercel.app (and any custom domain)
+      - key: NEXT_PUBLIC_APP_URL
+        sync: false               # set to https://retail-pos-radsting.vercel.app for share-link bills

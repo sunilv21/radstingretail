@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -NoProfile -Command 'Get-NetTCPConnection -LocalPort 3000,5000,3001 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue; Write-Host \\(\"killed pid \" + $_.OwningProcess + \" on port \" + $_.LocalPort\\) } catch {} }')",
+      "Bash(powershell -NoProfile -Command \"Get-NetTCPConnection -LocalPort 3000,5000,3001 -State Listen -ErrorAction SilentlyContinue | Select-Object LocalPort,OwningProcess\")",
+      "Bash(node \"c:/Users/sunil/Desktop/Radsting Devs/POS system/server/scripts/seed-warehouse-data.js\" admin@example.com LOL)",
+      "Bash(node --input-type=module -e \"import\\('./server/services/e-invoice.service.js'\\).then\\(m => console.log\\('OK exports:', Object.keys\\(m\\).join\\(', '\\)\\)\\).catch\\(e => console.error\\('FAIL:', e.message\\)\\);\")",
+      "Bash(node --input-type=module -e ' *)",
+      "Bash(node --check server/scripts/seed-plans.js)",
+      "Bash(node --check server/scripts/drop-plan.js)",
+      "Bash(node --check server/scripts/backfill-main-store.js)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\sunil\\\\Desktop\\\\Radsting Devs\\\\POS system\\\\\" -Directory | Select-Object Name)",
+      "Bash(dir /b)",
+      "Bash(rm -v data/store.json data/store.json.bak)",
+      "Bash(rmdir -v data)",
+      "Bash([ -f \"components/ui/$f\" ])",
+      "Bash([ -f \"POS system-admin/components/ui/$f\" ])",
+      "Bash(diff -q components/ui/__TRACKED_VAR__ 'POS system-admin/components/ui/__TRACKED_VAR__')",
+      "Bash([ -f \"lib/$f\" ])",
+      "Bash([ -f \"POS system-admin/lib/$f\" ])",
+      "Bash(mkdir -p app/admin/dashboard)",
+      "Bash(cp \"POS system-admin/app/page.tsx\" app/admin/page.tsx)",
+      "Bash(cp \"POS system-admin/app/dashboard/layout.tsx\" app/admin/dashboard/layout.tsx)",
+      "Bash(mkdir -p app/admin/dashboard/__TRACKED_VAR__)",
+      "Bash(cp 'POS system-admin/app/dashboard/__TRACKED_VAR__/page.tsx' app/admin/dashboard/__TRACKED_VAR__/page.tsx)",
+      "Bash(sed -i \"s|href: '/dashboard|href: '/admin/dashboard|g\" components/admin/Sidebar.tsx)",
+      "Bash(sed -i 's|href=\"/dashboard|href=\"/admin/dashboard|g' app/admin/dashboard/page.tsx)",
+      "Bash(npx eslint *)",
+      "Bash(echo \"===exit code: $?===\")",
+      "Bash(rm -rf .next)",
+      "Bash(npx next *)",
+      "Bash(timeout 12 node server/index.js)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(echo \"tsc exit: $?\")",
+      "Bash(node server/scripts/reset-super-admin-password.js radsting@pos.com)",
+      "Bash(node server/scripts/reset-super-admin-password.js radsting@pos.com 'Admin@123')",
+      "Bash(curl -s -X POST http://localhost:5000/api/auth/super-admin/login -H \"Content-Type: application/json\" -d '{\"email\":\"radsting@pos.com\",\"password\":\"Admin@123\"}')"
+    ]
+  }
+}
