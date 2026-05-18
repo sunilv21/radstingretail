@@ -27,5 +27,20 @@ export default async function handler(req, res) {
     return;
   }
 
-  return expressHandler(req, res);
+  try {
+    return await expressHandler(req, res);
+  } catch (err) {
+    console.error('[api] request failed:', err);
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({
+        success: false,
+        error: {
+          code: 'FUNCTION_ERROR',
+          message: err?.message || 'API function failed',
+        },
+      }));
+    }
+  }
 }

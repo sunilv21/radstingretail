@@ -256,7 +256,9 @@ export function prepareApp() {
   if (preparing) return preparing;
   preparing = (async () => {
     await connectDB();
-    await bootstrapIfEmpty();
+    if (process.env.NODE_ENV !== 'production') {
+      await bootstrapIfEmpty();
+    }
   })().catch((err) => {
     // If startup fails, clear the cached promise so the next request retries.
     // Otherwise every subsequent request would silently re-throw the same
