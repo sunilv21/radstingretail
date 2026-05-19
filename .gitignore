@@ -17,5 +17,7 @@ node_modules
 .next/
 .DS_Store
 
-# Persisted dev database
-data/
+# Persisted dev database — anchored to repo root only. Without the leading
+# slash this would also ignore server/data/, which holds the HSN master we
+# need at build time on Vercel.
+/data/
