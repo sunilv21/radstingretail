@@ -35,6 +35,7 @@ import {
   UserPlus,
   Undo2,
   Search,
+  Send,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, ApiError } from '@/lib/api';
@@ -253,6 +254,18 @@ export default function PurchasesPage() {
   // Cancelled / draft / un-received POs owe nothing, so they don't inflate
   // this figure the way a naive grandTotal − amountPaid did.
   const payableValue = purchases.reduce((s, p) => s + poPayable(p), 0);
+
+  // Move a draft PO to "ordered" — it becomes a committed order that can
+  // then be received (GRN), cancelled, or pre-closed.
+  const submitPo = async (po: PurchaseOrder) => {
+    try {
+      await api.post(`/purchases/${po._id}/submit`);
+      toast.success(`${po.poNumber} marked as ordered`);
+      load();
+    } catch (err) {
+      if (err instanceof ApiError) toast.error(err.message);
+    }
+  };
 
   const cancelPo = async (po: PurchaseOrder) => {
     const reason = window.prompt('Cancel reason:');
@@ -516,6 +529,12 @@ export default function PurchasesPage() {
                           <Button size="icon" variant="ghost" title="View" onClick={() => setViewPo(po)}>
                             <Eye className="w-4 h-4" />
                           </Button>
+                          {/* Draft → submit it to become a committed order. */}
+                          {po.status === 'draft' && (
+                            <Button size="icon" variant="ghost" title="Submit (mark ordered)" onClick={() => submitPo(po)}>
+                              <Send className="w-4 h-4 text-blue-600" />
+                            </Button>
+                          )}
                           {(po.status === 'ordered' || po.status === 'partial') && (
                             <>
                               <Button size="icon" variant="ghost" title="Receive (GRN)" onClick={() => setGrnPo(po)}>
@@ -526,12 +545,19 @@ export default function PurchasesPage() {
                               </Button>
                             </>
                           )}
-                          {po.status === 'ordered' && po.items.every((i) => i.receivedQty === 0) && (
+                          {/* Cancel — allowed on a draft, or on an ordered PO with
+                              nothing received yet. */}
+                          {(po.status === 'draft' ||
+                            (po.status === 'ordered' && po.items.every((i) => i.receivedQty === 0))) && (
                             <Button size="icon" variant="ghost" title="Cancel" onClick={() => cancelPo(po)}>
                               <Ban className="w-4 h-4 text-red-600" />
                             </Button>
                           )}
-                          {po.paymentStatus !== 'paid' && po.status !== 'cancelled' && (
+                          {/* Record payment — only once goods are received. A draft
+                              owes nothing, so no pay button there. */}
+                          {po.paymentStatus !== 'paid' &&
+                            po.status !== 'cancelled' &&
+                            po.status !== 'draft' && (
                             <Button size="icon" variant="ghost" title="Record payment" onClick={() => setPayPo(po)}>
                               <Wallet className="w-4 h-4 text-blue-600" />
                             </Button>
