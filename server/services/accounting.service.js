@@ -26,7 +26,11 @@ const CONTROL_ACCOUNT_NAME_BY_TYPE = {
   payable: 'Sundry Creditors',
   receivable: 'Sundry Debtors',
   cash: 'Cash',
-  bank: 'Cash', // treat bank as cash for trial-balance rollup in this minimal setup
+  // Digital tenders now post to their own Bank account (see ledger.engine.js).
+  // Legacy entries that carried accountType:'bank' but pointed at the Cash
+  // account resolve by accountId first (line ~46), so this fallback only
+  // affects entries with no resolvable accountId — route them to Bank.
+  bank: 'Bank',
   revenue: 'Sales Revenue',
   expense: 'Purchase Expense',
   gst: 'GST Payable (Output)', // default, overridden by narration below
@@ -595,7 +599,25 @@ export const AccountingService = {
 
     const totalIncome = Number(income.reduce((s, i) => s + i.amount, 0).toFixed(2));
     const totalExpense = Number(expense.reduce((s, i) => s + i.amount, 0).toFixed(2));
-    const netProfit = Number((totalIncome - totalExpense).toFixed(2));
+
+    // Periodic-inventory adjustment (#19). Purchases are expensed in full
+    // when received (the "Purchase Expense" account), but goods still on the
+    // shelf at period end have NOT been consumed — they're a current asset,
+    // not an expense. Add the closing-stock value back so net profit reflects
+    // Cost of Goods SOLD instead of Cost of Goods PURCHASED. This mirrors the
+    // classic closing-stock journal: Dr Closing Stock (asset), Cr Trading.
+    //
+    //   netProfit = income − (purchases − closingStock) − otherExpenses
+    //             = income − totalExpense + closingStock
+    //
+    // The balance sheet surfaces the same closingStock as an asset, with this
+    // adjusted netProfit as retained earnings, so the two statements agree and
+    // the sheet balances. (Limitation: opening stock is assumed captured in the
+    // prior period's books; for a single-period view from a zero start it's
+    // exact.)
+    const closingStockAtCost = Number(closingStock.totalAtCost || 0);
+    const grossNetProfit = Number((totalIncome - totalExpense).toFixed(2));
+    const netProfit = Number((totalIncome - totalExpense + closingStockAtCost).toFixed(2));
     return {
       from: from || null,
       to: to || null,
@@ -603,6 +625,11 @@ export const AccountingService = {
       expense,
       totalIncome,
       totalExpense,
+      // Net profit BEFORE the closing-stock adjustment (i.e. raw ledger
+      // income − expense). Kept so the UI can show the adjustment line.
+      grossNetProfit,
+      // The closing-stock value added back to convert purchases → COGS.
+      closingStockAdjustment: closingStockAtCost,
       netProfit,
       // Side-channel: closing stock at cost + per-category breakdown.
       // Informational only — does NOT alter the P&L numbers above.
@@ -655,9 +682,26 @@ export const AccountingService = {
       else if (grp.nature === 'liability') liabilities.push(row);
     }
 
+    // Surface inventory on hand as a current asset (#20). The ledger expenses
+    // purchases immediately, so the "Closing Stock" chart account stays at 0
+    // in the ledger — override it with the live inventory valuation. The
+    // matching credit lives in retained earnings: profitAndLoss adds the same
+    // closing-stock value back into netProfit, so assets ↑ and equity ↑ by the
+    // same amount and the sheet stays balanced.
+    const closingStock = await AccountingService.closingStockValue({ storeId });
+    const closingStockAtCost = Number(closingStock.totalAtCost || 0);
+    const csRow = assets.find((a) => a.name === 'Closing Stock');
+    if (csRow) {
+      csRow.amount = closingStockAtCost;
+    } else if (closingStockAtCost > 0) {
+      assets.push({ accountId: null, name: 'Closing Stock', amount: closingStockAtCost });
+    }
+
     const pnl = await AccountingService.profitAndLoss({ storeId, to: asOf });
     const totalAssets = Number(assets.reduce((s, a) => s + a.amount, 0).toFixed(2));
     const totalLiabilities = Number(liabilities.reduce((s, a) => s + a.amount, 0).toFixed(2));
+    // Retained earnings = adjusted net profit (already includes the closing
+    // stock add-back), so the equity side matches the asset-side inventory.
     const retained = pnl.netProfit;
     const totalEquityLiab = Number((totalLiabilities + retained).toFixed(2));
     return {
@@ -665,6 +709,10 @@ export const AccountingService = {
       assets,
       liabilities,
       retainedEarnings: retained,
+      closingStock: {
+        totalAtCost: closingStockAtCost,
+        totalAtRetail: closingStock.totalAtRetail,
+      },
       totalAssets,
       totalLiabilities,
       totalEquityAndLiab: totalEquityLiab,
@@ -672,41 +720,132 @@ export const AccountingService = {
     };
   },
 
+  /**
+   * Cash-flow statement (#21). Tracks money moving through the Cash and Bank
+   * chart accounts. For each account we report opening balance (everything
+   * before `from`), the in-period movement split into inflows / outflows by
+   * the entry's actual sign (a debit to cash is money IN; a credit is money
+   * OUT — the previous version mislabelled every `payment` entry as an
+   * outflow regardless of direction, so customer receipts showed as negative),
+   * and the resulting closing balance.
+   *
+   * Also returns:
+   *   - per-account breakdown (Cash vs Bank, so UPI/card money is separable)
+   *   - categorised buckets (sales received, customer receipts, supplier
+   *     payments, refunds, other) classified by sign, not by guesswork
+   *   - a daily series so the UI can chart day-by-day cash movement.
+   */
   async cashFlow({ storeId, from, to }) {
     const accounts = await AccountingService.listAccounts({ storeId });
-    const cashAccounts = accounts.filter(
-      (a) => /cash|bank/i.test(a.name),
-    );
+    // Cash + Bank chart accounts only (the physical liquidity accounts).
+    const cashAccounts = accounts.filter((a) => /^(cash|bank)$/i.test(a.name));
     const idSet = new Set(accounts.map((a) => String(a._id)));
     const byName = new Map(accounts.map((a) => [a.name, a]));
+    const cashAccIds = new Set(cashAccounts.map((a) => String(a._id)));
 
+    const fromDate = from ? new Date(from) : null;
+    const toDate = to ? new Date(to) : null;
+
+    // Pull every ledger entry up to `to` so we can compute opening balances
+    // (entries before `from`) and in-period movement in one query.
     const filter = { storeId };
-    if (from || to) filter.createdAt = {};
-    if (from) filter.createdAt.$gte = new Date(from);
-    if (to) filter.createdAt.$lte = new Date(to);
-    const entries = await LedgerEntry.find(filter).lean();
+    if (toDate) filter.createdAt = { $lte: toDate };
+    const allEntries = await LedgerEntry.find(filter).lean();
 
-    const buckets = { 'Sales (in)': 0, 'Purchase payment (out)': 0, 'Voucher payment (out)': 0, 'Voucher receipt (in)': 0, Other: 0 };
+    // Does this entry hit one of our cash/bank accounts? Resolve through the
+    // same control-account mapping the other statements use.
+    const hitsCashAccount = (e) => cashAccIds.has(resolveAccountIdForEntry(e, byName, idSet));
+    const signed = (e) => (e.entryType === 'debit' ? e.amount : -e.amount);
+
+    // Per-account opening / inflow / outflow / closing.
+    const perAccount = {};
     for (const acc of cashAccounts) {
-      const matching = entries.filter(
-        (r) => resolveAccountIdForEntry(r, byName, idSet) === String(acc._id),
-      );
-      for (const e of matching) {
-        const amt = e.entryType === 'debit' ? e.amount : -e.amount;
-        if (e.referenceType === 'sale') buckets['Sales (in)'] += amt;
-        else if (e.referenceType === 'payment') buckets['Purchase payment (out)'] += amt;
-        else if (e.referenceType === 'voucher') {
-          if (amt > 0) buckets['Voucher receipt (in)'] += amt;
-          else buckets['Voucher payment (out)'] += amt;
-        } else buckets.Other += amt;
-      }
+      perAccount[acc.name] = { account: acc.name, opening: 0, inflow: 0, outflow: 0, closing: 0 };
     }
-    const netCashFlow = Object.values(buckets).reduce((s, v) => s + v, 0);
+
+    const buckets = {
+      'Sales received': 0,
+      'Customer receipts': 0,
+      'Supplier payments': 0,
+      'Refunds paid': 0,
+      'Other receipts': 0,
+      'Other payments': 0,
+    };
+
+    // Daily net movement, keyed by YYYY-MM-DD.
+    const daily = new Map();
+
+    let totalOpening = 0;
+    let totalInflow = 0;
+    let totalOutflow = 0;
+
+    for (const e of allEntries) {
+      if (!hitsCashAccount(e)) continue;
+      const accId = resolveAccountIdForEntry(e, byName, idSet);
+      const acc = cashAccounts.find((a) => String(a._id) === accId);
+      const slot = acc ? perAccount[acc.name] : null;
+      const amt = signed(e);
+
+      // Pre-period entries → opening balance only.
+      if (fromDate && e.createdAt < fromDate) {
+        if (slot) slot.opening += amt;
+        totalOpening += amt;
+        continue;
+      }
+
+      // In-period movement.
+      if (slot) {
+        if (amt >= 0) slot.inflow += amt;
+        else slot.outflow += amt;
+      }
+      if (amt >= 0) totalInflow += amt;
+      else totalOutflow += amt;
+
+      // Categorise by referenceType + direction (sign), not by assumption.
+      const inflow = amt >= 0;
+      if (e.referenceType === 'sale') buckets['Sales received'] += amt;
+      else if (e.referenceType === 'payment') {
+        if (inflow) buckets['Customer receipts'] += amt; // Dr cash ← customer pays us
+        else buckets['Supplier payments'] += amt; // Cr cash → we pay supplier
+      } else if (e.referenceType === 'return') buckets['Refunds paid'] += amt;
+      else if (inflow) buckets['Other receipts'] += amt;
+      else buckets['Other payments'] += amt;
+
+      // Daily series.
+      const day = new Date(e.createdAt).toISOString().slice(0, 10);
+      daily.set(day, Number(((daily.get(day) || 0) + amt).toFixed(2)));
+    }
+
+    // Finalise per-account closing balances.
+    for (const slot of Object.values(perAccount)) {
+      slot.opening = Number(slot.opening.toFixed(2));
+      slot.inflow = Number(slot.inflow.toFixed(2));
+      slot.outflow = Number(slot.outflow.toFixed(2));
+      slot.closing = Number((slot.opening + slot.inflow + slot.outflow).toFixed(2));
+    }
+
+    const netCashFlow = Number((totalInflow + totalOutflow).toFixed(2));
+    const closingBalance = Number((totalOpening + netCashFlow).toFixed(2));
+
     return {
       from: from || null,
       to: to || null,
-      buckets: Object.entries(buckets).map(([label, amount]) => ({ label, amount: Number(amount.toFixed(2)) })),
-      netCashFlow: Number(netCashFlow.toFixed(2)),
+      openingBalance: Number(totalOpening.toFixed(2)),
+      totalInflow: Number(totalInflow.toFixed(2)),
+      totalOutflow: Number(totalOutflow.toFixed(2)),
+      netCashFlow,
+      closingBalance,
+      // Per-account split — Cash (physical) vs Bank (UPI/card/transfer).
+      byAccount: Object.values(perAccount),
+      // Categorised buckets, correctly signed.
+      buckets: Object.entries(buckets).map(([label, amount]) => ({
+        label,
+        amount: Number(amount.toFixed(2)),
+      })),
+      // Day-by-day net movement for charting.
+      daily: Array.from(daily.entries())
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([date, amount]) => ({ date, amount })),
     };
   },
 

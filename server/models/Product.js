@@ -15,6 +15,11 @@ const productSchema = new mongoose.Schema(
     sellingPrice: { type: Number, required: true },
     mrp: { type: Number, default: 0 },
     gstRate: { type: Number, enum: [0, 5, 12, 18, 28], default: 18 },
+    // When true, `sellingPrice` already INCLUDES GST (the listed/MRP-style
+    // price). The billing engine then reverse-extracts tax instead of
+    // adding it on top — preventing the "GST charged twice" bug. When
+    // unset, the store's settings.defaultGSTMode decides the fallback.
+    priceIncludesGst: { type: Boolean, default: false },
     hsnCode: { type: String, required: true },
     sacCode: String,
     taxType: { type: String, enum: ['GST', 'IGST', 'Exempt'], default: 'GST' },

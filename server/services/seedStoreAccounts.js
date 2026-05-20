@@ -40,6 +40,10 @@ const SUB_GROUPS = [
 /** Default ledger accounts, keyed by sub-group name. */
 const ACCOUNTS = [
   { name: 'Cash', group: 'Current Assets' },
+  // Digital tenders (UPI / card / wallet) post here, distinct from Cash,
+  // so the trial balance, cash-flow and day-book separate physical cash
+  // from money that landed in the bank.
+  { name: 'Bank', group: 'Current Assets' },
   { name: 'Sundry Debtors', group: 'Current Assets' },
   { name: 'GST Input Credit', group: 'Current Assets' },
   { name: 'Closing Stock', group: 'Current Assets' },

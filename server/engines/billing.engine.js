@@ -17,6 +17,10 @@ export const BillingEngine = {
       .lean();
     const byId = new Map(products.map((p) => [String(p._id), p]));
 
+    // Store-level fallback for products that don't set the flag explicitly.
+    // settings.defaultGSTMode: 'inclusive' | 'exclusive' (exclusive default).
+    const storeInclusiveDefault = storeDoc.settings?.defaultGSTMode === 'inclusive';
+
     const resolved = items.map((it) => {
       const product = byId.get(String(it.productId));
       if (!product) {
@@ -27,6 +31,18 @@ export const BillingEngine = {
         throw new AppError('INVALID_QUANTITY', `Quantity for ${product.name} must be > 0`, 400);
       }
       const sellingPrice = Number(it.sellingPrice ?? product.sellingPrice);
+      // Resolve GST-inclusive flag with this precedence:
+      //   1. explicit per-line override from the request (rare),
+      //   2. the product's own priceIncludesGst flag,
+      //   3. the store's defaultGSTMode.
+      // Passing this into the GST engine is what stops inclusive prices
+      // from being taxed a second time.
+      const priceIncludesGst =
+        it.priceIncludesGst !== undefined
+          ? !!it.priceIncludesGst
+          : product.priceIncludesGst !== undefined
+            ? !!product.priceIncludesGst
+            : storeInclusiveDefault;
       return {
         productId: product._id,
         productSnapshot: {
@@ -42,6 +58,7 @@ export const BillingEngine = {
         discount: Number(it.discount || 0),
         discountType: it.discountType || 'flat',
         gstRate: Number(product.gstRate || 0),
+        priceIncludesGst,
       };
     });
 

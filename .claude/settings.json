@@ -34,7 +34,13 @@
       "Bash(echo \"tsc exit: $?\")",
       "Bash(node server/scripts/reset-super-admin-password.js radsting@pos.com)",
       "Bash(node server/scripts/reset-super-admin-password.js radsting@pos.com 'Admin@123')",
-      "Bash(curl -s -X POST http://localhost:5000/api/auth/super-admin/login -H \"Content-Type: application/json\" -d '{\"email\":\"radsting@pos.com\",\"password\":\"Admin@123\"}')"
+      "Bash(curl -s -X POST http://localhost:5000/api/auth/super-admin/login -H \"Content-Type: application/json\" -d '{\"email\":\"radsting@pos.com\",\"password\":\"Admin@123\"}')",
+      "Bash(node --check server/engines/ledger.engine.js)",
+      "Bash(node --check server/engines/billing.engine.js)",
+      "Bash(node --check server/services/seedStoreAccounts.js)",
+      "Bash(node --check server/models/Product.js)",
+      "Bash(node --check server/services/accounting.service.js)",
+      "Bash(node --check server/scripts/backfill-bank-ledger.js)"
     ]
   }
 }

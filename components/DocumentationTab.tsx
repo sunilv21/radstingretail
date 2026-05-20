@@ -1507,6 +1507,120 @@ const Sec17 = (
   </>
 )
 
+const Sec18 = (
+  <>
+    <SectionHeader
+      num="18"
+      icon={Calculator}
+      title="Party Settlement"
+      description="When the same business is BOTH your customer and your supplier, settle what they owe you against what you owe them — instead of moving cash both ways."
+      tone="emerald"
+    />
+
+    <HighlightBox title="When you'd use this">
+      You sell goods to <b>Sharma Traders</b> on credit (they owe you ₹40,000). You also
+      buy from them (you owe them ₹25,000). Rather than them paying you ₹40,000 and you
+      paying them ₹25,000, you offset the two: settle ₹25,000 against both, leaving
+      Sharma Traders owing you a net ₹15,000. One entry, no cash moved.
+    </HighlightBox>
+
+    <SubHeader>How Radsting finds settlement candidates</SubHeader>
+    <p className="text-[14px] text-stone-700 leading-relaxed">
+      Open <b>Books → Party Settlement</b>. Radsting automatically scans for any party
+      that exists as both a customer (with outstanding receivable) and a supplier (with
+      outstanding payable), matching them by:
+    </p>
+    <FlowVertical
+      items={[
+        { label: '1. GSTIN match', sub: 'If the customer and supplier share the same GST number, they are the same legal entity. Strongest match.', tone: 'emerald' },
+        { label: '2. Phone match', sub: 'If no GSTIN match, the same phone number on both records links them.', tone: 'blue' },
+      ]}
+    />
+    <p className="text-[14px] text-stone-700 leading-relaxed">
+      Each candidate row shows the receivable, the payable, the <b>suggested settlement</b>
+      (the smaller of the two), and the <b>net</b> still owed after settling.
+    </p>
+
+    <SubHeader>Posting a settlement</SubHeader>
+    <Steps
+      items={[
+        {
+          title: 'Pick a matched pair',
+          body: 'The list only shows parties who are both customer and supplier with dues on both sides. If a party isn\'t listed, they don\'t qualify (one side is zero, or no GSTIN/phone link).',
+        },
+        {
+          title: 'Confirm the amount',
+          body: 'The suggested amount is the smaller of receivable and payable — the most you can offset. You can settle less (a partial settlement), never more than either side\'s outstanding.',
+        },
+        {
+          title: 'Post it',
+          body: 'Radsting creates a Contra voucher (CON-…) and the matching ledger entries atomically — all-or-nothing.',
+        },
+      ]}
+    />
+
+    <SubHeader>What happens in the books</SubHeader>
+    <p className="text-[14px] text-stone-700 leading-relaxed">
+      A settlement is a contra entry — it moves the obligation, no cash involved:
+    </p>
+    <DataTable
+      headers={['Side', 'Entry', 'Effect']}
+      rows={[
+        [
+          'Supplier (payable)',
+          <span className="text-emerald-700 font-mono text-[12px]" key="1">Dr Sundry Creditors</span>,
+          'Reduces what you owe them',
+        ],
+        [
+          'Customer (receivable)',
+          <span className="text-rose-700 font-mono text-[12px]" key="2">Cr Sundry Debtors</span>,
+          'Reduces what they owe you',
+        ],
+      ]}
+    />
+    <p className="text-[14px] text-stone-700 leading-relaxed">
+      Both the customer&rsquo;s and the supplier&rsquo;s outstanding balances drop by the
+      settled amount, and the per-party ledgers each get an entry referencing the
+      contra voucher so the trail is auditable.
+    </p>
+
+    <InfoBox tone="amber" title="It only offsets — it doesn't collect cash">
+      Settlement nets the two sides against each other. The remaining net balance still
+      has to be collected (or paid) the normal way — record a customer payment or a
+      supplier payment for whatever is left over.
+    </InfoBox>
+
+    <SubHeader>How it ties into aging</SubHeader>
+    <p className="text-[14px] text-stone-700 leading-relaxed">
+      After settling, the offset amount disappears from <b>Reports → Aging</b> on both
+      the receivables and payables sides, because each party&rsquo;s outstanding has
+      genuinely gone down. Only the net remainder keeps aging into the 0-30 / 31-60 /
+      61-90 / 90+ buckets.
+    </p>
+
+    <Faq
+      items={[
+        {
+          q: 'A party I know is both customer and supplier isn\'t in the list.',
+          a: 'They only appear when BOTH sides have an outstanding balance > 0 AND they share a GSTIN or phone. Check that the customer record and supplier record carry the same GSTIN (or the same phone), and that both actually have dues.',
+        },
+        {
+          q: 'Can I settle more than they owe me?',
+          a: 'No. The amount is capped at the smaller of the receivable and payable. Settling the suggested amount zeroes out the smaller side completely.',
+        },
+        {
+          q: 'Does this create a cash or bank entry?',
+          a: 'No — it\'s a contra voucher (CON-…). No money moves. It only reduces the two outstanding balances against each other.',
+        },
+        {
+          q: 'Can I reverse a settlement?',
+          a: 'Vouchers are immutable. To undo one, post a journal voucher that reverses it (Dr Sundry Debtors, Cr Sundry Creditors for the same amount), or raise a support ticket.',
+        },
+      ]}
+    />
+  </>
+)
+
 // ─────────────────────────────────────────────────────────────────────
 // Section catalogue + sidebar groups
 // ─────────────────────────────────────────────────────────────────────
@@ -1538,6 +1652,7 @@ const SECTIONS: SectionDef[] = [
   { id: 'help', num: '15', title: 'Help & Support', icon: HelpCircle, group: 'comms', content: Sec15 },
   { id: 'shortcuts', num: '16', title: 'Keyboard Shortcuts', icon: KeyRound, group: 'tips', content: Sec16 },
   { id: 'troubleshooting', num: '17', title: 'Troubleshooting', icon: AlertCircle, group: 'tips', content: Sec17 },
+  { id: 'party-settlement', num: '18', title: 'Party Settlement', icon: Calculator, group: 'money', content: Sec18 },
 ]
 
 const GROUPS: { id: SectionDef['group']; label: string }[] = [
@@ -1654,7 +1769,7 @@ export default function DocumentationTab() {
             <div className="relative">
               <span className="inline-flex items-center gap-1.5 bg-white/10 border border-white/20 text-white/85 px-3.5 py-1 rounded-full text-[12px] font-medium tracking-[0.4px] mb-6">
                 <BookOpen className="w-3.5 h-3.5" />
-                Radsting POS · Operator Reference · 17 Topics
+                Radsting POS · Operator Reference · 18 Topics
               </span>
               <h1 className="font-serif text-[42px] sm:text-[50px] font-extrabold leading-[1.05] tracking-tight mb-4">
                 Knowledge <span className="text-emerald-300">Base</span>
@@ -1666,7 +1781,7 @@ export default function DocumentationTab() {
               </p>
               <div className="flex flex-wrap gap-8">
                 {[
-                  { num: '17', lbl: 'Topics' },
+                  { num: '18', lbl: 'Topics' },
                   { num: '9', lbl: 'Modules' },
                   { num: '5', lbl: 'Roles' },
                   { num: '8', lbl: 'Categories' },

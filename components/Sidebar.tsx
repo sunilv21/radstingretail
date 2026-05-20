@@ -127,6 +127,7 @@ export default function Sidebar({ isOpen, onClose, user, onLogout }: SidebarProp
             basePath: '/dashboard/purchases',
             children: [
               { label: 'Purchase Orders', href: '/dashboard/purchases', icon: Truck },
+              { label: 'Suppliers', href: '/dashboard/suppliers', icon: Building2 },
               ...(showPurchaseCreate
                 ? [{ label: 'Scan Bill (OCR)', href: '/dashboard/scan-bill', icon: Scan }]
                 : []),
