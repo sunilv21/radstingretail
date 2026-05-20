@@ -16,6 +16,7 @@ import {
 import { toast } from 'sonner';
 import { api, ApiError } from '@/lib/api';
 import type { Sale, StoreInfo } from '@/lib/types';
+import { poPayable, isRealPurchase } from '@/lib/purchase-utils';
 
 const money = (n: number) =>
   '₹' + Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -263,6 +264,7 @@ interface PoLite {
   grandTotal: number;
   amountPaid: number;
   items: { cgst: number; sgst: number; igst: number; taxableAmount: number; receivedQty: number }[];
+  receiptRefs?: { total?: number }[];
   createdAt: string;
 }
 
@@ -275,8 +277,12 @@ function PurchaseRegister() {
     setLoading(true);
     try {
       // /api/purchases doesn't currently filter by date — fetch and filter client-side.
+      // Exclude cancelled + draft POs: a purchase register lists actual
+      // committed purchases, not voided or in-progress ones. Without this,
+      // a cancelled PO showed its full grand total in the register totals.
       const data = await api.get<PoLite[]>('/purchases?limit=500');
       setPos(data.filter((p) => {
+        if (!isRealPurchase(p)) return false;
         const t = new Date(p.createdAt).getTime();
         return t >= new Date(from).getTime() && t <= new Date(`${to}T23:59:59`).getTime();
       }));
@@ -324,7 +330,7 @@ function PurchaseRegister() {
         taxable.toFixed(2), cgst.toFixed(2), sgst.toFixed(2), igst.toFixed(2),
         Number(p.grandTotal || 0).toFixed(2),
         Number(p.amountPaid || 0).toFixed(2),
-        Number((p.grandTotal || 0) - (p.amountPaid || 0)).toFixed(2),
+        poPayable(p).toFixed(2),
       ];
     });
     downloadCsv(`purchase-register-${from}-to-${to}.csv`, [header, ...rows]);
@@ -386,7 +392,7 @@ function PurchaseRegister() {
                   sgst += Number(it.sgst || 0);
                   igst += Number(it.igst || 0);
                 }
-                const outstanding = Number(p.grandTotal || 0) - Number(p.amountPaid || 0);
+                const outstanding = poPayable(p);
                 return (
                   <TableRow key={p._id}>
                     <TableCell className="font-mono text-xs">{p.poNumber}</TableCell>

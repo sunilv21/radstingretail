@@ -39,6 +39,7 @@ import {
 import { toast } from 'sonner';
 import { api, ApiError } from '@/lib/api';
 import type { Product } from '@/lib/types';
+import { poPayable } from '@/lib/purchase-utils';
 
 interface Supplier {
   _id: string;
@@ -248,10 +249,10 @@ export default function PurchasesPage() {
       return s + rem;
     }, 0);
 
-  const payableValue = purchases.reduce(
-    (s, p) => s + Math.max(0, (p.grandTotal || 0) - (p.amountPaid || 0)),
-    0,
-  );
+  // Payable = value of goods actually RECEIVED (via GRN) minus what's paid.
+  // Cancelled / draft / un-received POs owe nothing, so they don't inflate
+  // this figure the way a naive grandTotal − amountPaid did.
+  const payableValue = purchases.reduce((s, p) => s + poPayable(p), 0);
 
   const cancelPo = async (po: PurchaseOrder) => {
     const reason = window.prompt('Cancel reason:');
@@ -1706,7 +1707,9 @@ function PayDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
-  const outstanding = Math.max(0, po.grandTotal - po.amountPaid);
+  // You can only owe (and pay) for goods actually received — use the
+  // GRN-based payable, not the ordered grand total.
+  const outstanding = poPayable(po);
   const [amount, setAmount] = useState(String(outstanding.toFixed(2)));
   const [mode, setMode] = useState<'cash' | 'bank' | 'upi'>('bank');
   const [reference, setReference] = useState('');
@@ -1856,7 +1859,7 @@ function ViewPoDialog({ po, onClose }: { po: PurchaseOrder; onClose: () => void 
             <Row label="Paid" value={money(po.amountPaid)} />
             <Row
               label="Outstanding"
-              value={money(Math.max(0, po.grandTotal - po.amountPaid))}
+              value={money(poPayable(po))}
               strong
             />
           </div>
