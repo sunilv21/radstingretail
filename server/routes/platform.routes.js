@@ -16,6 +16,7 @@ import { subscriptionView } from '../utils/subscription.js';
 import { invalidateOrgCache } from '../middleware/subscriptionGuard.js';
 import { isEmailTaken, USER_TYPE } from '../services/accountLookup.js';
 import { getEffectiveLimits } from '../utils/planLimits.js';
+import { seedStoreAccounts } from '../services/seedStoreAccounts.js';
 
 // Sub-routers — each owns a slice of the admin portal API surface.
 // All inherit `requireSuperAdmin` since they're mounted under this router.
@@ -206,6 +207,12 @@ router.post('/organizations', async (req, res, next) => {
       type: 'store',
       isActive: true,
     });
+
+    // Every store needs its own chart of accounts before the first sale
+    // can post a ledger entry. Without this, the POS rings up the bill,
+    // the ledger engine tries to debit "Sundry Debtors", and the whole
+    // atomic transaction rolls back with a misleading 500.
+    await seedStoreAccounts(mainStore._id);
 
     // Wire the new store back onto the tenant_admin row so JWTs issued at
     // first login carry a valid storeId straight away. Without this, the

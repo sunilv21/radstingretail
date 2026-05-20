@@ -1,12 +1,15 @@
 import LedgerEntry from '../models/LedgerEntry.js';
 import Account from '../models/Account.js';
+import { seedStoreAccounts } from '../services/seedStoreAccounts.js';
 
 async function push(entry, session) {
   await LedgerEntry.create([{ ...entry }], { session });
 }
 
-// Resolve a well-known account in the Chart of Accounts by name. Bootstrapped
-// in scripts/bootstrap.js; every store has these.
+// Resolve a well-known account in the Chart of Accounts by name. Stores
+// created through any of the onboarding flows are seeded up-front. The
+// self-heal block below covers stores that pre-date the seeding being
+// wired into store-creation — first ledger touch repairs the chart.
 const CACHED_BY_STORE = new Map(); // storeId -> { accountName -> accountId }
 
 async function resolveAccount(storeId, name, session) {
@@ -15,9 +18,31 @@ async function resolveAccount(storeId, name, session) {
   const cache = CACHED_BY_STORE.get(key);
   if (cache.has(name)) return cache.get(name);
 
-  const a = await Account.findOne({ storeId, name }).session(session || null).lean();
+  let a = await Account.findOne({ storeId, name }).session(session || null).lean();
   if (!a) {
-    throw new Error(`[ledger] Chart-of-accounts account "${name}" not found for store ${storeId}. Run bootstrap.`);
+    // Self-heal: the store doesn't have its chart of accounts yet (created
+    // before seeding was wired into the onboarding flows). Seed now and
+    // retry the lookup. Idempotent — seeds only what's missing.
+    //
+    // We deliberately seed OUTSIDE the calling transaction. Mongo can't
+    // insert into a collection inside a session if the collection doesn't
+    // exist yet (the implicit-create needs a separate transaction), and
+    // the new account docs are seed data — committing them independently
+    // of the user-triggered transaction is the right semantic.
+    console.warn(
+      `[ledger] Self-heal: store ${storeId} missing account "${name}". Seeding chart of accounts now.`,
+    );
+    try {
+      await seedStoreAccounts(storeId);
+    } catch (err) {
+      console.error('[ledger] Self-heal seedStoreAccounts failed:', err?.stack || err);
+    }
+    a = await Account.findOne({ storeId, name }).session(session || null).lean();
+    if (!a) {
+      throw new Error(
+        `[ledger] Chart-of-accounts account "${name}" not found for store ${storeId} even after self-heal.`,
+      );
+    }
   }
   cache.set(name, a._id);
   return a._id;

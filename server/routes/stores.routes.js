@@ -9,6 +9,7 @@ import { JWT_SECRET } from '../middleware/auth.js';
 import { permissionsFor } from '../rbac/matrix.js';
 import { enforceStoreLimit } from '../utils/enforcePlanLimit.js';
 import { USER_TYPE } from '../services/accountLookup.js';
+import { seedStoreAccounts } from '../services/seedStoreAccounts.js';
 
 /**
  * Build a fresh access token for `account` after their store grants
@@ -147,6 +148,12 @@ router.post('/', requirePermission('store', 'create'), async (req, res, next) =>
       invoiceCounter: 0,
       address: address || {},
     });
+
+    // Seed the chart of accounts for the new branch. Without this, the
+    // first POS sale, purchase GRN, or voucher tries to debit/credit an
+    // account that doesn't exist for this storeId and the ledger engine
+    // rolls back the whole atomic transaction.
+    await seedStoreAccounts(store._id);
 
     // Grant the creator access to the new branch and reissue their token so
     // the StoreSwitcher and PlanUsageBadge in their browser pick it up
