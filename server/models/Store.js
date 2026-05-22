@@ -14,10 +14,31 @@ const addressSchema = new mongoose.Schema(
 const whatsappSchema = new mongoose.Schema(
   {
     enabled: { type: Boolean, default: false },
+    // Send provider. 'meta' = Meta WhatsApp Cloud API (default for back-compat
+    // with all the existing phoneNumberId/accessToken fields below).
+    // 'twilio' = Twilio's WhatsApp REST API (uses accountSid/authToken +
+    // a 'whatsapp:+...' from-number). When disabled and no provider is
+    // configured, the WhatsApp button in POS falls back to opening wa.me.
+    provider: { type: String, enum: ['meta', 'twilio'], default: 'meta' },
+
+    // ── Meta Cloud API fields ─────────────────────────────────────────
     phoneNumberId: { type: String, default: '' },
     businessAccountId: { type: String, default: '' },
     accessToken: { type: String, default: '' },
     apiVersion: { type: String, default: 'v21.0' },
+
+    // ── Twilio fields ─────────────────────────────────────────────────
+    // Twilio Console → Account → API keys & tokens.
+    twilioAccountSid: { type: String, default: '' },
+    twilioAuthToken: { type: String, default: '' },
+    // The WhatsApp-enabled sender, e.g. '+14155238886' (Twilio sandbox)
+    // or your purchased / approved business number. Stored without the
+    // 'whatsapp:' prefix; the service prepends it at send time.
+    twilioFromNumber: { type: String, default: '' },
+    // Twilio uses a Content SID (HX…) for approved template messages.
+    twilioContentSid: { type: String, default: '' },
+
+    // ── Shared ───────────────────────────────────────────────────────
     defaultCountryCode: { type: String, default: '91' },
     messageTemplate: { type: String, default: '' },
     templateLanguage: { type: String, default: 'en' },

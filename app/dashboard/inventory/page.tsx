@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import Barcode from 'react-barcode';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -34,6 +35,8 @@ import {
   Package,
   ListPlus,
   Trash2,
+  Truck,
+  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, ApiError } from '@/lib/api';
@@ -136,9 +139,14 @@ const EMPTY_FORM: FormState = {
 };
 
 export default function InventoryPage() {
+  const router = useRouter();
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  // Reorder dialog state — opens with a single low-stock product
+  // pre-filled. The dialog lets the user batch in more low-stock items
+  // before creating the draft PO.
+  const [reorderSeed, setReorderSeed] = useState<Product | null>(null);
   // Stock filter pills.  in_stock = stock > minStock,
   // low = 0 < stock <= minStock, out = stock <= 0,
   // warranty = warrantyMonths > 0, inactive = isActive === false.
@@ -629,6 +637,20 @@ export default function InventoryPage() {
                           >
                             <RefreshCcw className="w-4 h-4" />
                           </Button>
+                          {/* Reorder — only surfaces when this product is at
+                              or below its minStock threshold. Opens a dialog
+                              that creates a draft PO; more low-stock items
+                              can be batched into the same draft from there. */}
+                          {p.stock <= (p.minStock || 0) && (
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              title="Reorder from supplier"
+                              onClick={() => setReorderSeed(p)}
+                            >
+                              <Truck className="w-4 h-4 text-amber-600" />
+                            </Button>
+                          )}
                           {p.isSerialised && (
                             <Button
                               size="icon"
@@ -878,6 +900,20 @@ export default function InventoryPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Reorder dialog — opens with one low-stock product pre-filled;
+          the cashier can add more low-stock items and pick a supplier. */}
+      {reorderSeed && (
+        <ReorderDialog
+          seed={reorderSeed}
+          allProducts={products}
+          onClose={() => setReorderSeed(null)}
+          onCreated={(id) => {
+            setReorderSeed(null);
+            router.push(`/dashboard/purchases?po=${id}`);
+          }}
+        />
+      )}
 
       {/* Barcode view dialog */}
       <Dialog open={!!barcodeProduct} onOpenChange={(o) => !o && setBarcodeProduct(null)}>
@@ -1870,5 +1906,285 @@ function LabelCard({ product }: { product: Product }) {
       <div className="font-bold">₹{product.sellingPrice.toFixed(2)}</div>
       <div className="text-[9px] text-slate-500">SKU {product.sku}</div>
     </div>
+  );
+}
+
+/**
+ * Reorder dialog. Opens with one low-stock product (`seed`) and lets the
+ * cashier add more low-stock items, pick a supplier, tune quantities, then
+ * fire POST /purchases with status:'draft'. The draft PO can then be
+ * reviewed, edited and submitted from /dashboard/purchases.
+ *
+ * Default quantity per line is reorderQty (falling back to minStock, then 1)
+ * so the operator usually only has to confirm the supplier and click Create.
+ */
+interface ReorderLine {
+  productId: string;
+  name: string;
+  sku: string;
+  purchasePrice: number;
+  gstRate: number;
+  hsnCode: string;
+  quantity: number;
+}
+
+interface SupplierLite {
+  _id: string;
+  name: string;
+  gstNumber?: string;
+  stateCode?: string;
+}
+
+function ReorderDialog({
+  seed,
+  allProducts,
+  onClose,
+  onCreated,
+}: {
+  seed: Product;
+  allProducts: Product[];
+  onClose: () => void;
+  onCreated: (poId: string) => void;
+}) {
+  const defaultQtyFor = (p: Product) =>
+    Number(p.reorderQty || p.minStock || 1);
+
+  const toLine = (p: Product): ReorderLine => ({
+    productId: p._id,
+    name: p.name,
+    sku: p.sku,
+    purchasePrice: Number(p.purchasePrice || 0),
+    gstRate: Number(p.gstRate || 0),
+    hsnCode: p.hsnCode || '',
+    quantity: defaultQtyFor(p),
+  });
+
+  const [lines, setLines] = useState<ReorderLine[]>([toLine(seed)]);
+  const [suppliers, setSuppliers] = useState<SupplierLite[]>([]);
+  const [supplierId, setSupplierId] = useState<string>('');
+  const [addSearch, setAddSearch] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    api
+      .get<SupplierLite[]>('/suppliers')
+      .then(setSuppliers)
+      .catch(() => setSuppliers([]));
+  }, []);
+
+  // Low-stock products NOT already on the draft, filtered by the search box.
+  const candidates = allProducts.filter((p) => {
+    if (p.stock > (p.minStock || 0)) return false;
+    if (lines.some((l) => l.productId === p._id)) return false;
+    const q = addSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      p.name.toLowerCase().includes(q) ||
+      (p.sku || '').toLowerCase().includes(q) ||
+      (p.barcode || '').toLowerCase().includes(q)
+    );
+  });
+
+  const addLine = (p: Product) => {
+    setLines((prev) => [...prev, toLine(p)]);
+    setAddSearch('');
+  };
+
+  const removeLine = (productId: string) => {
+    setLines((prev) => prev.filter((l) => l.productId !== productId));
+  };
+
+  const updateQty = (productId: string, qty: number) => {
+    setLines((prev) =>
+      prev.map((l) => (l.productId === productId ? { ...l, quantity: Math.max(1, qty) } : l)),
+    );
+  };
+
+  const subtotal = lines.reduce((s, l) => s + l.quantity * l.purchasePrice, 0);
+  const tax = lines.reduce(
+    (s, l) => s + l.quantity * l.purchasePrice * (l.gstRate / 100),
+    0,
+  );
+  const grandTotal = subtotal + tax;
+
+  const create = async () => {
+    if (!supplierId) {
+      toast.error('Pick a supplier first');
+      return;
+    }
+    if (lines.length === 0) {
+      toast.error('Add at least one product to reorder');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      // Backend POST /purchases accepts a draft PO with these line fields.
+      // The PO will land on /dashboard/purchases?po=<id> for review + submit.
+      const res = await api.post<{ _id: string; poNumber: string }>('/purchases', {
+        supplierId,
+        status: 'draft',
+        items: lines.map((l) => ({
+          productId: l.productId,
+          orderedQty: l.quantity,
+          purchasePrice: l.purchasePrice,
+          gstRate: l.gstRate,
+        })),
+      });
+      toast.success(`Draft PO ${res.poNumber} created`);
+      onCreated(res._id);
+    } catch (err) {
+      if (err instanceof ApiError) toast.error(err.message);
+      else toast.error('Could not create draft PO');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Truck className="w-5 h-5 text-amber-600" />
+            Reorder from supplier
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+          {/* Supplier */}
+          <div className="space-y-1.5">
+            <Label className="text-sm font-medium">Supplier *</Label>
+            <select
+              className="h-9 w-full border rounded-md px-2 bg-background text-sm"
+              value={supplierId}
+              onChange={(e) => setSupplierId(e.target.value)}
+            >
+              <option value="">— Pick a supplier —</option>
+              {suppliers.map((s) => (
+                <option key={s._id} value={s._id}>
+                  {s.name}
+                  {s.gstNumber ? ` · ${s.gstNumber}` : ''}
+                </option>
+              ))}
+            </select>
+            {suppliers.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No suppliers yet. Add one under{' '}
+                <a href="/dashboard/suppliers" className="text-blue-600 underline">
+                  Suppliers
+                </a>{' '}
+                first.
+              </p>
+            )}
+          </div>
+
+          {/* Lines */}
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">Items ({lines.length})</Label>
+            <div className="border rounded-md divide-y">
+              {lines.map((l) => (
+                <div key={l.productId} className="flex items-center gap-2 px-3 py-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{l.name}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      SKU {l.sku} · ₹{l.purchasePrice.toFixed(2)} × {l.gstRate}% GST
+                    </div>
+                  </div>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={l.quantity}
+                    onChange={(e) => updateQty(l.productId, Number(e.target.value))}
+                    className="w-20 text-right"
+                  />
+                  <div className="w-24 text-right font-mono text-sm">
+                    ₹{(l.quantity * l.purchasePrice * (1 + l.gstRate / 100)).toFixed(2)}
+                  </div>
+                  {lines.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeLine(l.productId)}
+                      className="text-muted-foreground hover:text-red-600 p-1"
+                      title="Remove from draft"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Add more — searches the rest of low-stock inventory. */}
+          <div className="space-y-1.5">
+            <Label className="text-sm font-medium">Add another low-stock item</Label>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <Input
+                value={addSearch}
+                onChange={(e) => setAddSearch(e.target.value)}
+                placeholder="Search by name / SKU / barcode"
+                className="pl-8"
+              />
+            </div>
+            {addSearch.trim() && (
+              <div className="border rounded-md max-h-40 overflow-y-auto divide-y">
+                {candidates.length === 0 ? (
+                  <div className="text-xs text-muted-foreground p-2 italic">
+                    No matching low-stock products.
+                  </div>
+                ) : (
+                  candidates.slice(0, 8).map((p) => (
+                    <button
+                      key={p._id}
+                      type="button"
+                      onClick={() => addLine(p)}
+                      className="w-full flex items-center justify-between px-3 py-2 hover:bg-muted text-left"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium truncate">{p.name}</div>
+                        <div className="text-[11px] text-muted-foreground">
+                          {p.stock} in stock · min {p.minStock}
+                        </div>
+                      </div>
+                      <Plus className="w-4 h-4 text-blue-600" />
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Totals */}
+          <div className="bg-muted/40 rounded-md p-3 text-sm space-y-1">
+            <div className="flex justify-between">
+              <span>Subtotal</span>
+              <span className="font-mono">₹{subtotal.toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Tax</span>
+              <span className="font-mono">₹{tax.toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between font-semibold text-base pt-1 border-t">
+              <span>Grand total</span>
+              <span className="font-mono">₹{grandTotal.toFixed(2)}</span>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            onClick={create}
+            disabled={submitting || !supplierId || lines.length === 0}
+            className="bg-blue-600 hover:bg-blue-700"
+          >
+            {submitting ? 'Creating…' : `Create draft PO (${lines.length} item${lines.length === 1 ? '' : 's'})`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

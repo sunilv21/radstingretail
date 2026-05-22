@@ -436,24 +436,52 @@ export default function POSPage() {
     charPattern: /[\x20-\x7E]/,
   });
 
+  // Surface why search came back empty: real API failure vs. genuinely no
+  // matches vs. searching while offline with empty cache. Without this the
+  // previous catch-everything-and-show-nothing pattern looked identical to
+  // "no matching products" — impossible to debug from the UI.
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
+
   useEffect(() => {
     let cancel = false;
     const q = search.trim();
     if (!q) {
       setSearchResults([]);
+      setSearchError(null);
+      setSearching(false);
       return;
     }
     const timer = setTimeout(async () => {
+      if (!cancel) {
+        setSearching(true);
+        setSearchError(null);
+      }
       // Try server search first when online; fall through to cache otherwise.
       if (online) {
         try {
           const rows = await api.get<Product[]>(
             `/pos/search?q=${encodeURIComponent(q)}&limit=8`,
           );
-          if (!cancel) setSearchResults(rows);
+          if (!cancel) {
+            setSearchResults(rows);
+            setSearching(false);
+          }
           return;
-        } catch {
-          /* fall through to offline cache */
+        } catch (err) {
+          // Capture the real reason for the cashier to see. Then attempt
+          // the offline cache as a best-effort fallback — but if THAT
+          // also returns nothing, the error message stays visible so the
+          // cashier knows it was a server fault, not "no matches".
+          if (!cancel) {
+            const msg =
+              err instanceof ApiError
+                ? `${err.code || 'ERROR'} · ${err.message}`
+                : err instanceof Error
+                  ? err.message
+                  : 'Server search failed';
+            setSearchError(msg);
+          }
         }
       }
       try {
@@ -469,15 +497,28 @@ export default function POSPage() {
                 p.qrCode?.toLowerCase().includes(ql)),
           )
           .slice(0, 8);
-        if (!cancel) setSearchResults(matches);
+        if (!cancel) {
+          setSearchResults(matches);
+          // Cache hit clears the prior server-error message; if cache is
+          // empty AND we're offline AND no prior error, surface that.
+          if (matches.length > 0) setSearchError(null);
+          else if (!online && !searchError) {
+            setSearchError('Offline — product cache empty. Reconnect once to refresh.');
+          }
+          setSearching(false);
+        }
       } catch {
-        if (!cancel) setSearchResults([]);
+        if (!cancel) {
+          setSearchResults([]);
+          setSearching(false);
+        }
       }
     }, 180);
     return () => {
       cancel = true;
       clearTimeout(timer);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, online]);
 
   useEffect(() => {
@@ -831,6 +872,25 @@ export default function POSPage() {
                 }}
               />
             </div>
+            {/* Visible search state: error, loading, empty — so the cashier
+                can tell apart "API broken" from "no matches" from "still
+                loading". The silent-fallback pattern that lived here before
+                made all three look identical. */}
+            {search.trim() && searchError && (
+              <div className="flex items-start gap-2 rounded-md border border-rose-300 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30 px-3 py-2 text-xs text-rose-800 dark:text-rose-300">
+                <X className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                <div className="flex-1 font-mono wrap-break-word">{searchError}</div>
+              </div>
+            )}
+            {search.trim() && searching && searchResults.length === 0 && !searchError && (
+              <div className="text-xs text-muted-foreground px-1">Searching…</div>
+            )}
+            {search.trim() && !searching && searchResults.length === 0 && !searchError && (
+              <div className="text-xs text-muted-foreground border border-dashed rounded-md px-3 py-3 text-center">
+                No products match <span className="font-medium">&quot;{search.trim()}&quot;</span>.
+                Try the barcode or a different name.
+              </div>
+            )}
             {searchResults.length > 0 && (
               <div className="border rounded-md divide-y max-h-64 overflow-y-auto">
                 {searchResults.map((p) => (

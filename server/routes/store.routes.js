@@ -40,17 +40,32 @@ function publicStore(store) {
     },
     whatsapp: {
       enabled: !!wa.enabled,
+      provider: wa.provider || 'meta',
+      // Meta-specific
       phoneNumberId: wa.phoneNumberId || '',
       businessAccountId: wa.businessAccountId || '',
       accessToken: maskSecret(wa.accessToken),
       apiVersion: wa.apiVersion || 'v21.0',
+      // Twilio-specific. authToken is the secret — masked. SID and from
+      // number aren't secrets and round-trip cleanly.
+      twilioAccountSid: wa.twilioAccountSid || '',
+      twilioAuthToken: maskSecret(wa.twilioAuthToken),
+      twilioFromNumber: wa.twilioFromNumber || '',
+      twilioContentSid: wa.twilioContentSid || '',
+      // Shared
       defaultCountryCode: wa.defaultCountryCode || '91',
       messageTemplate: wa.messageTemplate || '',
       templateLanguage: wa.templateLanguage || 'en',
       appSecret: maskSecret(wa.appSecret),
       verifyToken: wa.verifyToken || '',
       webhookStatus: wa.webhookStatus || null,
-      configured: !!(wa.enabled && wa.phoneNumberId && wa.accessToken),
+      // `configured` is provider-aware: each provider has different required
+      // secrets, so the UI's "credentials saved" badge only lights up when
+      // the active provider's full set is on file.
+      configured:
+        wa.provider === 'twilio'
+          ? !!(wa.enabled && wa.twilioAccountSid && wa.twilioAuthToken && wa.twilioFromNumber)
+          : !!(wa.enabled && wa.phoneNumberId && wa.accessToken),
       webhookReady: !!(wa.enabled && wa.appSecret && wa.verifyToken),
       verifiedProfile: wa.verifiedProfile || null,
       testLog: Array.isArray(wa.testLog) ? wa.testLog.slice(0, TEST_LOG_CAP) : [],
@@ -183,12 +198,35 @@ router.put('/me', async (req, res, next) => {
       store.whatsapp = store.whatsapp || {};
       const wa = store.whatsapp;
 
+      // Provider selector. When switching providers, clear the cached
+      // verifiedProfile because it was tied to the previous provider's
+      // identity (e.g. Meta phone number ID vs Twilio account SID).
+      if (incoming.provider !== undefined && ['meta', 'twilio'].includes(incoming.provider)) {
+        if (wa.provider !== incoming.provider) {
+          wa.verifiedProfile = null;
+        }
+        wa.provider = incoming.provider;
+      }
+
+      // Meta access token — secret, only persist if a real (non-masked)
+      // value was sent. Clearing the verified profile when the token
+      // changes prevents stale Verified-with-Meta UI.
       if (incoming.accessToken !== undefined) {
         if (
           incoming.accessToken !== '' &&
           !String(incoming.accessToken).startsWith(MASK)
         ) {
           wa.accessToken = String(incoming.accessToken).trim();
+          wa.verifiedProfile = null;
+        }
+      }
+      // Twilio auth token — same secret-handling pattern as Meta's token.
+      if (incoming.twilioAuthToken !== undefined) {
+        if (
+          incoming.twilioAuthToken !== '' &&
+          !String(incoming.twilioAuthToken).startsWith(MASK)
+        ) {
+          wa.twilioAuthToken = String(incoming.twilioAuthToken).trim();
           wa.verifiedProfile = null;
         }
       }
@@ -200,6 +238,7 @@ router.put('/me', async (req, res, next) => {
       }
       const waFields = [
         'enabled', 'phoneNumberId', 'businessAccountId', 'apiVersion',
+        'twilioAccountSid', 'twilioFromNumber', 'twilioContentSid',
         'defaultCountryCode', 'messageTemplate', 'templateLanguage', 'verifyToken',
       ];
       for (const f of waFields) {

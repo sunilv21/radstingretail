@@ -105,10 +105,19 @@ export interface StoreInfo {
   settings?: StoreSettings;
   whatsapp?: {
     enabled: boolean;
+    /** Which provider sends the messages. Defaults to 'meta' for back-compat. */
+    provider: 'meta' | 'twilio';
+    // Meta Cloud API fields
     phoneNumberId: string;
     businessAccountId: string;
     accessToken: string; // server returns masked value
     apiVersion: string;
+    // Twilio fields
+    twilioAccountSid: string;
+    twilioAuthToken: string; // server returns masked value
+    twilioFromNumber: string;
+    twilioContentSid: string;
+    // Shared
     defaultCountryCode: string;
     messageTemplate: string;
     templateLanguage: string;

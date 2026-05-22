@@ -40,7 +40,21 @@
       "Bash(node --check server/services/seedStoreAccounts.js)",
       "Bash(node --check server/models/Product.js)",
       "Bash(node --check server/services/accounting.service.js)",
-      "Bash(node --check server/scripts/backfill-bank-ledger.js)"
+      "Bash(node --check server/scripts/backfill-bank-ledger.js)",
+      "Bash(grep -n \"accessToken\\\\|whatsapp\\\\|MASK\\\\|publicStore\\\\|whatsapp\\\\\\\\.\" server/routes/store.routes.js)",
+      "Bash(node --check server/services/whatsapp.service.js)",
+      "Bash(node --check server/routes/store.routes.js)",
+      "Bash(node --check server/models/Store.js)",
+      "Bash(awk '/^function WhatsappTab/{f=1} f{print NR\": \"$0; if\\(/^}$/ && f\\){exit}}' app/dashboard/settings/page.tsx)",
+      "Bash(grep -n \"^function WhatsappTab\\\\|^function ProviderTile\\\\|^}$\" app/dashboard/settings/page.tsx)",
+      "Bash(awk -F: 'NR==1||/ProviderTile/||/WhatsappTab/')",
+      "Bash(awk 'NR>=1097 && NR<=1700 && /^}$/{print NR; exit}' app/dashboard/settings/page.tsx)",
+      "Bash(awk '/^function ProviderTile/{found=1} found{print NR\": \"$0; if\\(/^}$/ && found && NR > start+3\\){exit}; if\\(found && !start\\){start=NR}}' app/dashboard/settings/page.tsx)",
+      "Bash(grep -n \"export function ok\\\\|export const ok\" server/utils/response.js | head -3; echo \"...\"; sed -n '/export function ok\\\\|export const ok/,/^}/p' server/utils/response.js | head -10)",
+      "Bash(node --check server/routes/supplier.routes.js)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\sunil\\Desktop\\Radsting Devs\\POS system\\server\\utils"
     ]
   }
 }

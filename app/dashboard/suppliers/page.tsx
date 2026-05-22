@@ -35,6 +35,10 @@ interface Supplier {
   stateCode?: string
   address?: string
   outstandingBalance?: number
+  /** Per-supplier rollup added by GET /suppliers (see supplier.routes.js). */
+  poCount?: number
+  purchasedValue?: number
+  paidValue?: number
 }
 
 const money = (n: number | undefined) =>
@@ -72,10 +76,23 @@ export default function SuppliersPage() {
     )
   }, [search, suppliers])
 
-  const totalOutstanding = useMemo(
-    () => suppliers.reduce((sum, s) => sum + (s.outstandingBalance || 0), 0),
-    [suppliers],
-  )
+  const rollup = useMemo(() => {
+    // Aggregate across the whole supplier base. Outstanding can go negative
+    // when a supplier holds an advance — we sum the signed values so the
+    // headline reflects the net position (positive = we owe, negative = they
+    // owe us).
+    let purchased = 0;
+    let paid = 0;
+    let outstanding = 0;
+    let withDues = 0;
+    for (const s of suppliers) {
+      purchased += s.purchasedValue || 0;
+      paid += s.paidValue || 0;
+      outstanding += s.outstandingBalance || 0;
+      if ((s.outstandingBalance || 0) > 0) withDues += 1;
+    }
+    return { purchased, paid, outstanding, withDues };
+  }, [suppliers])
 
   const openAdd = () => {
     setEditing(null)
@@ -110,22 +127,47 @@ export default function SuppliersPage() {
         </div>
       </div>
 
-      {/* Summary tiles */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      {/* Summary tiles — Purchased | Paid | Outstanding | With dues so the
+          three accounting figures the owner asks for are side-by-side.
+          Outstanding goes negative when the net position is in credit (we
+          paid more than we received) — shown in emerald with "Credit"
+          label so it doesn't read as a phantom debt. */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Card>
           <CardContent className="p-4">
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold">
-              Suppliers
+              Purchased
             </div>
-            <div className="text-2xl font-bold mt-1">{suppliers.length}</div>
+            <div className="text-2xl font-bold mt-1 font-mono">{money(rollup.purchased)}</div>
+            <div className="text-[11px] text-muted-foreground mt-0.5">
+              {suppliers.reduce((s, x) => s + (x.poCount || 0), 0)} PO{suppliers.reduce((s, x) => s + (x.poCount || 0), 0) === 1 ? '' : 's'} across {suppliers.length} supplier{suppliers.length === 1 ? '' : 's'}
+            </div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4">
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold">
-              Total outstanding payable
+              Paid
             </div>
-            <div className="text-2xl font-bold mt-1 text-rose-600">{money(totalOutstanding)}</div>
+            <div className="text-2xl font-bold mt-1 text-emerald-600 font-mono">{money(rollup.paid)}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold">
+              {rollup.outstanding < 0 ? 'Net credit' : 'Outstanding'}
+            </div>
+            <div
+              className={`text-2xl font-bold mt-1 font-mono ${
+                rollup.outstanding > 0
+                  ? 'text-rose-600'
+                  : rollup.outstanding < 0
+                    ? 'text-emerald-600'
+                    : ''
+              }`}
+            >
+              {money(Math.abs(rollup.outstanding))}
+            </div>
           </CardContent>
         </Card>
         <Card>
@@ -134,7 +176,7 @@ export default function SuppliersPage() {
               With dues
             </div>
             <div className="text-2xl font-bold mt-1">
-              {suppliers.filter((s) => (s.outstandingBalance || 0) > 0).length}
+              {rollup.withDues}
             </div>
           </CardContent>
         </Card>
@@ -190,14 +232,50 @@ export default function SuppliersPage() {
                       </div>
                     </div>
                   </Link>
-                  <div className="text-right shrink-0">
+                  {/* Per-supplier rollup. Hidden on narrow screens to keep
+                      the row legible — the per-supplier detail page has the
+                      same breakdown for small-screen users. */}
+                  <div className="hidden md:grid grid-cols-3 gap-4 shrink-0 text-right text-xs">
+                    <RollupCell
+                      label="POs"
+                      value={String(s.poCount ?? 0)}
+                      sub={s.poCount ? `${money(s.purchasedValue)} ordered` : '—'}
+                    />
+                    <RollupCell
+                      label="Paid"
+                      value={money(s.paidValue)}
+                      tone="emerald"
+                    />
+                    <RollupCell
+                      label={(s.outstandingBalance || 0) < 0 ? 'Credit' : 'Outstanding'}
+                      value={money(Math.abs(s.outstandingBalance || 0))}
+                      tone={
+                        (s.outstandingBalance || 0) > 0
+                          ? 'rose'
+                          : (s.outstandingBalance || 0) < 0
+                            ? 'emerald'
+                            : 'muted'
+                      }
+                      bold
+                    />
+                  </div>
+                  {/* Mobile-only outstanding chip — keeps a meaningful number
+                      visible on narrow screens where the 3-column rollup is
+                      hidden. */}
+                  <div className="md:hidden text-right shrink-0">
                     <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      Outstanding
+                      {(s.outstandingBalance || 0) < 0 ? 'Credit' : 'Outstanding'}
                     </div>
                     <div
-                      className={`font-mono font-semibold text-sm ${(s.outstandingBalance || 0) > 0 ? 'text-rose-600' : 'text-muted-foreground'}`}
+                      className={`font-mono font-semibold text-sm ${
+                        (s.outstandingBalance || 0) > 0
+                          ? 'text-rose-600'
+                          : (s.outstandingBalance || 0) < 0
+                            ? 'text-emerald-600'
+                            : 'text-muted-foreground'
+                      }`}
                     >
-                      {money(s.outstandingBalance)}
+                      {money(Math.abs(s.outstandingBalance || 0))}
                     </div>
                   </div>
                   <Button
@@ -355,5 +433,38 @@ function SupplierDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** Tiny stacked label/value cell used in the per-supplier rollup row. */
+function RollupCell({
+  label,
+  value,
+  sub,
+  tone = 'muted',
+  bold,
+}: {
+  label: string
+  value: string
+  sub?: string
+  tone?: 'muted' | 'rose' | 'emerald'
+  bold?: boolean
+}) {
+  const valueColor =
+    tone === 'rose'
+      ? 'text-rose-600'
+      : tone === 'emerald'
+        ? 'text-emerald-600'
+        : 'text-foreground'
+  return (
+    <div className="min-w-16">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+      <div className={`font-mono ${bold ? 'font-semibold text-sm' : 'text-xs'} ${valueColor}`}>
+        {value}
+      </div>
+      {sub && <div className="text-[10px] text-muted-foreground truncate">{sub}</div>}
+    </div>
   )
 }

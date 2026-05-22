@@ -553,13 +553,25 @@ export default function PurchasesPage() {
                               <Ban className="w-4 h-4 text-red-600" />
                             </Button>
                           )}
-                          {/* Record payment — only once goods are received. A draft
-                              owes nothing, so no pay button there. */}
-                          {po.paymentStatus !== 'paid' &&
-                            po.status !== 'cancelled' &&
-                            po.status !== 'draft' && (
-                            <Button size="icon" variant="ghost" title="Record payment" onClick={() => setPayPo(po)}>
-                              <Wallet className="w-4 h-4 text-blue-600" />
+                          {/* Record payment. For received POs, this draws down
+                              the payable. For draft / ordered POs with no GRN
+                              yet, it's an ADVANCE: the supplier balance goes
+                              negative (= they owe you), and future GRN payable
+                              nets against it automatically. */}
+                          {po.paymentStatus !== 'paid' && po.status !== 'cancelled' && (
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              title={
+                                poPayable(po) > 0
+                                  ? 'Record payment'
+                                  : 'Record advance payment (no goods received yet)'
+                              }
+                              onClick={() => setPayPo(po)}
+                            >
+                              <Wallet
+                                className={`w-4 h-4 ${poPayable(po) > 0 ? 'text-blue-600' : 'text-amber-600'}`}
+                              />
                             </Button>
                           )}
                           {(po.status === 'received' || po.status === 'partial' || po.status === 'closed') && po.items.some((i) => i.receivedQty > 0) && (
@@ -1733,10 +1745,15 @@ function PayDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
-  // You can only owe (and pay) for goods actually received — use the
-  // GRN-based payable, not the ordered grand total.
+  // Outstanding = GRN-based payable. When zero (draft / ordered with no
+  // receipt yet), this dialog acts as an ADVANCE payment recorder: the
+  // amount becomes a supplier credit (negative outstandingBalance), which
+  // future GRN payables automatically net against.
   const outstanding = poPayable(po);
-  const [amount, setAmount] = useState(String(outstanding.toFixed(2)));
+  const isAdvance = outstanding <= 0;
+  // Default the amount: outstanding when there's something to pay, else
+  // blank (operator must consciously enter the advance amount).
+  const [amount, setAmount] = useState(isAdvance ? '' : String(outstanding.toFixed(2)));
   const [mode, setMode] = useState<'cash' | 'bank' | 'upi'>('bank');
   const [reference, setReference] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -1750,7 +1767,7 @@ function PayDialog({
     setSubmitting(true);
     try {
       await api.post(`/purchases/${po._id}/pay`, { amount: amt, mode, reference });
-      toast.success('Payment recorded');
+      toast.success(isAdvance ? 'Advance payment recorded' : 'Payment recorded');
       onDone();
     } catch (err) {
       if (err instanceof ApiError) toast.error(err.message);
@@ -1763,19 +1780,46 @@ function PayDialog({
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>
-            Record payment — {po.poNumber}
+          <DialogTitle className="flex items-center gap-2">
+            {isAdvance ? (
+              <>
+                <Wallet className="w-4 h-4 text-amber-600" />
+                Record advance — {po.poNumber}
+              </>
+            ) : (
+              <>Record payment — {po.poNumber}</>
+            )}
           </DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
+          {isAdvance && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+              No goods received against this PO yet. This payment will be recorded as an
+              <b> advance</b>: the supplier balance goes negative (= they owe you), and a
+              future GRN&rsquo;s payable automatically nets against it.
+            </div>
+          )}
           <div className="bg-muted p-3 rounded text-sm space-y-1">
             <Row label="PO total" value={money(po.grandTotal)} />
             <Row label="Paid so far" value={money(po.amountPaid)} />
-            <Row label="Outstanding" value={money(outstanding)} strong />
+            <Row
+              label={isAdvance ? 'Currently owed' : 'Outstanding'}
+              value={money(outstanding)}
+              strong
+            />
           </div>
           <div className="space-y-1">
-            <Label className="text-xs">Amount</Label>
-            <Input type="number" min={0} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+            <Label className="text-xs">
+              {isAdvance ? 'Advance amount' : 'Amount'}
+            </Label>
+            <Input
+              type="number"
+              min={0}
+              step="0.01"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder={isAdvance ? 'Enter advance amount' : ''}
+            />
           </div>
           <div className="space-y-1">
             <Label className="text-xs">Mode</Label>
@@ -1804,7 +1848,7 @@ function PayDialog({
             Cancel
           </Button>
           <Button onClick={submit} disabled={submitting} className="bg-blue-600 hover:bg-blue-700">
-            {submitting ? 'Saving…' : 'Record payment'}
+            {submitting ? 'Saving…' : isAdvance ? 'Record advance' : 'Record payment'}
           </Button>
         </DialogFooter>
       </DialogContent>

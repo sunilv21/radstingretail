@@ -61,10 +61,19 @@ import DocumentationTab from '@/components/DocumentationTab';
 
 interface WhatsAppForm {
   enabled: boolean;
+  /** Which provider sends the messages. */
+  provider: 'meta' | 'twilio';
+  // Meta Cloud API
   phoneNumberId: string;
   businessAccountId: string;
   accessToken: string;
   apiVersion: string;
+  // Twilio
+  twilioAccountSid: string;
+  twilioAuthToken: string;
+  twilioFromNumber: string;
+  twilioContentSid: string;
+  // Shared
   defaultCountryCode: string;
   messageTemplate: string;
   templateLanguage: string;
@@ -118,10 +127,15 @@ const EMPTY_SETTINGS: StoreSettings = {
 
 const EMPTY_WHATSAPP: WhatsAppForm = {
   enabled: false,
+  provider: 'meta',
   phoneNumberId: '',
   businessAccountId: '',
   accessToken: '',
   apiVersion: 'v21.0',
+  twilioAccountSid: '',
+  twilioAuthToken: '',
+  twilioFromNumber: '',
+  twilioContentSid: '',
   defaultCountryCode: '91',
   messageTemplate: '',
   templateLanguage: 'en',
@@ -350,10 +364,15 @@ export default function SettingsPage() {
         },
         whatsapp: {
           enabled: !!s.whatsapp?.enabled,
+          provider: s.whatsapp?.provider === 'twilio' ? 'twilio' : 'meta',
           phoneNumberId: s.whatsapp?.phoneNumberId || '',
           businessAccountId: s.whatsapp?.businessAccountId || '',
           accessToken: s.whatsapp?.accessToken || '',
           apiVersion: s.whatsapp?.apiVersion || 'v21.0',
+          twilioAccountSid: s.whatsapp?.twilioAccountSid || '',
+          twilioAuthToken: s.whatsapp?.twilioAuthToken || '',
+          twilioFromNumber: s.whatsapp?.twilioFromNumber || '',
+          twilioContentSid: s.whatsapp?.twilioContentSid || '',
           defaultCountryCode: s.whatsapp?.defaultCountryCode || '91',
           messageTemplate: s.whatsapp?.messageTemplate || '',
           templateLanguage: s.whatsapp?.templateLanguage || 'en',
@@ -891,6 +910,8 @@ interface WhatsAppStatus {
 }
 
 function deriveStatus(whatsapp: WhatsAppForm): WhatsAppStatus {
+  const isTwilio = whatsapp.provider === 'twilio';
+  const providerName = isTwilio ? 'Twilio' : 'Meta';
   if (!whatsapp.enabled) {
     return {
       tone: 'gray',
@@ -902,7 +923,9 @@ function deriveStatus(whatsapp: WhatsAppForm): WhatsAppStatus {
     return {
       tone: 'amber',
       label: 'Missing credentials',
-      detail: 'Add Phone Number ID + Permanent Access Token, then save.',
+      detail: isTwilio
+        ? 'Add Account SID, Auth Token and From Number, then save.'
+        : 'Add Phone Number ID + Permanent Access Token, then save.',
     };
   }
   const lastTest = whatsapp.testLog?.[0];
@@ -910,21 +933,25 @@ function deriveStatus(whatsapp: WhatsAppForm): WhatsAppStatus {
     return {
       tone: 'red',
       label: 'Last test failed',
-      detail: lastTest.error || 'Recheck the token and Phone Number ID.',
+      detail:
+        lastTest.error ||
+        (isTwilio
+          ? 'Recheck the Account SID, Auth Token and From Number.'
+          : 'Recheck the token and Phone Number ID.'),
     };
   }
   if (!whatsapp.verifiedProfile) {
     return {
       tone: 'blue',
       label: 'Saved — verify to confirm',
-      detail: 'Click "Verify with Meta" to read the live business profile.',
+      detail: `Click "Verify with ${providerName}" to read the live account profile.`,
     };
   }
   return {
     tone: 'green',
     label: 'Connected',
     detail: whatsapp.verifiedProfile.verifiedName
-      ? `Live on Meta as "${whatsapp.verifiedProfile.verifiedName}".`
+      ? `Live on ${providerName} as "${whatsapp.verifiedProfile.verifiedName}".`
       : 'Credentials live — ready to send bills automatically.',
   };
 }
@@ -1006,10 +1033,15 @@ function WhatsappTab({
   onReload: () => Promise<void> | void;
 }) {
   const [showToken, setShowToken] = useState(false);
+  const [showTwilioToken, setShowTwilioToken] = useState(false);
   const [testPhone, setTestPhone] = useState('');
   const [testing, setTesting] = useState(false);
   const [verifying, setVerifying] = useState(false);
+  const provider = whatsapp.provider || 'meta';
+  const isTwilio = provider === 'twilio';
+  const providerLabel = isTwilio ? 'Twilio' : 'Meta';
   const tokenIsMasked = whatsapp.accessToken.startsWith('••');
+  const twilioTokenIsMasked = whatsapp.twilioAuthToken.startsWith('••');
   const status = deriveStatus(whatsapp);
   const profile = whatsapp.verifiedProfile || null;
   const qTone = qualityTone(profile?.qualityRating);
@@ -1052,7 +1084,7 @@ function WhatsappTab({
     setVerifying(true);
     try {
       await api.post('/store/whatsapp/verify');
-      toast.success('Credentials verified with Meta');
+      toast.success(`Credentials verified with ${providerLabel}`);
     } catch (err) {
       if (err instanceof ApiError) toast.error(`Verify failed — ${err.message}`);
       else toast.error('Verify failed');
@@ -1063,152 +1095,255 @@ function WhatsappTab({
   };
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
+    <div className="space-y-6">
+      {/* ─── HERO ─────────────────────────────────────────────────────
+          The one-glance state. Provider name, status, and the two
+          primary actions (enable toggle + verify). Subtle gradient
+          accent runs across the top so the card has presence without
+          being noisy. */}
+      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden dark:border-slate-700 dark:bg-slate-900">
+        <div
+          className={`h-1.5 w-full ${
+            status.tone === 'green'
+              ? 'bg-gradient-to-r from-emerald-500 to-emerald-400'
+              : status.tone === 'amber'
+                ? 'bg-gradient-to-r from-amber-500 to-amber-400'
+                : status.tone === 'red'
+                  ? 'bg-gradient-to-r from-rose-500 to-rose-400'
+                  : status.tone === 'blue'
+                    ? 'bg-gradient-to-r from-blue-500 to-blue-400'
+                    : 'bg-gradient-to-r from-slate-300 to-slate-200'
+          }`}
+        />
+        <div className="p-6">
           <div className="flex items-start justify-between gap-4 flex-wrap">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <MessageCircle className="w-5 h-5 text-green-600" />
-                WhatsApp Cloud API
-              </CardTitle>
-              <CardDescription>
-                Connect your Meta WhatsApp Business account to send invoices directly from
-                every bill — no tap needed.
-              </CardDescription>
+            <div className="flex items-start gap-4 min-w-0">
+              <div className="shrink-0 w-12 h-12 rounded-xl bg-emerald-100 dark:bg-emerald-950/40 flex items-center justify-center">
+                <MessageCircle className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  {providerLabel} · WhatsApp delivery
+                </div>
+                <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100 mt-0.5">
+                  Send invoices straight to your customers
+                </h2>
+                <p className="text-sm text-slate-600 dark:text-slate-300 mt-1 max-w-2xl">
+                  {status.detail}
+                </p>
+              </div>
             </div>
             <StatusBadge status={status} />
           </div>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <div className="text-sm text-muted-foreground">{status.detail}</div>
 
-          {profile && (
-            <div className="mt-2 rounded-md border bg-muted/40 p-3 space-y-2">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div className="text-xs font-semibold uppercase text-muted-foreground">
-                  Verified with Meta
-                </div>
-                <div className="text-[11px] text-muted-foreground">
-                  {formatRelative(profile.verifiedAt)}
-                </div>
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                <div>
-                  <div className="text-[11px] uppercase text-muted-foreground">Business name</div>
-                  <div className="font-medium">{profile.verifiedName || '—'}</div>
-                </div>
-                <div>
-                  <div className="text-[11px] uppercase text-muted-foreground">Display number</div>
-                  <div className="font-medium">{profile.displayPhoneNumber || '—'}</div>
-                </div>
-                <div>
-                  <div className="text-[11px] uppercase text-muted-foreground">Quality rating</div>
-                  <Badge className={`${qToneClass[qTone]} border-transparent`} variant="outline">
-                    {profile.qualityRating || 'UNKNOWN'}
-                  </Badge>
-                </div>
-                <div>
-                  <div className="text-[11px] uppercase text-muted-foreground">Verification</div>
-                  <div className="font-medium">
-                    {profile.codeVerificationStatus || profile.nameStatus || '—'}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="flex items-center gap-2 pt-2">
+          <div className="mt-5 flex flex-wrap items-center gap-3 pt-4 border-t border-slate-200 dark:border-slate-700">
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                checked={whatsapp.enabled}
+                onChange={(e) => onChange({ ...whatsapp, enabled: e.target.checked })}
+              />
+              <span className="font-semibold text-sm text-slate-900 dark:text-slate-100">
+                Automatic sending
+              </span>
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                {whatsapp.enabled
+                  ? 'On — bills are pushed via your provider.'
+                  : 'Off — bills fall back to manual wa.me.'}
+              </span>
+            </label>
+            <div className="flex-1" />
             <Button
               onClick={runVerify}
               disabled={verifying || !whatsapp.configured}
               variant="outline"
               size="sm"
+              title={whatsapp.configured ? `Verify credentials with ${providerLabel}` : 'Save credentials first'}
             >
-              <ShieldCheck className="w-4 h-4 mr-1" />
-              {verifying ? 'Verifying…' : 'Verify with Meta'}
+              <ShieldCheck className="w-4 h-4 mr-1.5" />
+              {verifying ? 'Verifying…' : `Verify with ${providerLabel}`}
             </Button>
-            {!whatsapp.configured && (
-              <span className="text-[11px] text-muted-foreground">
-                Save Phone Number ID + token first.
-              </span>
-            )}
           </div>
-        </CardContent>
-      </Card>
+        </div>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-start justify-between gap-3 flex-wrap">
-            <div>
-              <CardTitle className="text-base">API credentials</CardTitle>
-              <CardDescription>
-                From Meta Business Suite → WhatsApp → API Setup. Paste your values here.
-              </CardDescription>
+        {/* Verified profile inline — only when we have one. Strong panel
+            with proper labels so the operator can confirm at a glance
+            which account they're connected to. */}
+        {profile && (
+          <div className="border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950/50 px-6 py-4">
+            <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 inline-flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Verified with {providerLabel}
+              </div>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                {formatRelative(profile.verifiedAt)}
+              </div>
             </div>
-            {/* Credentials-complete chip — derived server-side from
-                enabled + phoneNumberId + accessToken. Lets the operator
-                see at a glance whether the API path is ready. */}
-            <Badge
-              variant="outline"
-              className={
-                whatsapp.configured
-                  ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border-transparent'
-                  : 'bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300 border-transparent'
-              }
-            >
-              {whatsapp.configured ? (
-                <>
-                  <CheckCircle2 className="w-3 h-3 mr-1" /> Credentials saved
-                </>
-              ) : (
-                <>
-                  <AlertCircle className="w-3 h-3 mr-1" /> Not configured
-                </>
-              )}
-            </Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-start gap-3 bg-muted p-3 rounded">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={whatsapp.enabled}
-                onChange={(e) => onChange({ ...whatsapp, enabled: e.target.checked })}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              <ProfileField label="Business name" value={profile.verifiedName} />
+              <ProfileField label="Display number" value={profile.displayPhoneNumber} mono />
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400 font-medium">
+                  Quality rating
+                </div>
+                <Badge className={`${qToneClass[qTone]} border-transparent mt-1`} variant="outline">
+                  {profile.qualityRating || 'UNKNOWN'}
+                </Badge>
+              </div>
+              <ProfileField
+                label="Verification"
+                value={profile.codeVerificationStatus || profile.nameStatus}
               />
-              <span className="font-semibold">Enable WhatsApp sending</span>
-            </label>
-            <div className="text-xs text-muted-foreground">
-              When off, the WhatsApp button falls back to opening wa.me.
             </div>
           </div>
+        )}
+      </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-1">
-              <Label className="text-xs">Phone Number ID *</Label>
+      {/* ─── STEP 01 — PROVIDER ─────────────────────────────────── */}
+      <StepHeader
+        num="01"
+        title="Choose your provider"
+        description="Pick who delivers your messages. You can switch later — credentials for the other provider stay saved."
+        tone="emerald"
+      />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <ProviderTile
+          active={provider === 'meta'}
+          title="Meta WhatsApp Cloud API"
+          tagline="Official, direct from Meta"
+          bullets={[
+            '1,000 free conversations / month',
+            'Lowest latency at scale',
+            'Templates via Meta Business Suite',
+          ]}
+          onSelect={() => onChange({ ...whatsapp, provider: 'meta' })}
+          tone="emerald"
+          monogram="M"
+        />
+        <ProviderTile
+          active={provider === 'twilio'}
+          title="Twilio"
+          tagline="Multi-channel, simpler onboarding"
+          bullets={[
+            'Sandbox number ready in minutes',
+            'Unified billing across SMS / WhatsApp',
+            'Content Templates (HX… SIDs)',
+          ]}
+          onSelect={() => onChange({ ...whatsapp, provider: 'twilio' })}
+          tone="rose"
+          monogram="T"
+        />
+      </div>
+
+      {/* ─── STEP 02 — CREDENTIALS ───────────────────────────────── */}
+      <StepHeader
+        num="02"
+        title={`Connect your ${providerLabel} account`}
+        description={
+          isTwilio
+            ? 'From Twilio Console → Account → API keys & tokens. Paste the values below and save.'
+            : 'From Meta Business Suite → WhatsApp → API Setup. Paste the values below and save.'
+        }
+        tone={isTwilio ? 'rose' : 'emerald'}
+        chip={
+          whatsapp.configured
+            ? { label: 'Saved', icon: <CheckCircle2 className="w-3 h-3" />, tone: 'emerald' }
+            : { label: 'Not configured', icon: <AlertCircle className="w-3 h-3" />, tone: 'amber' }
+        }
+      />
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900 space-y-5">
+        {isTwilio ? (
+          /* ── Twilio fields ───────────────────────────────────── */
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <FieldShell label="Account SID" required help="Twilio Console → Account → API keys & tokens → “Account SID”">
+              <Input
+                value={whatsapp.twilioAccountSid}
+                onChange={(e) => onChange({ ...whatsapp, twilioAccountSid: e.target.value.trim() })}
+                placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                className="font-mono text-xs"
+              />
+            </FieldShell>
+            <FieldShell label="From Number" required help="Use +14155238886 for the Twilio sandbox, or your approved business number.">
+              <Input
+                value={whatsapp.twilioFromNumber}
+                onChange={(e) => onChange({ ...whatsapp, twilioFromNumber: e.target.value.trim() })}
+                placeholder="+14155238886"
+              />
+            </FieldShell>
+            <FieldShell
+              label="Auth Token"
+              required
+              span={2}
+              help="Stored server-side. Only the last 4 characters are ever returned to the browser."
+            >
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Input
+                    type={showTwilioToken ? 'text' : 'password'}
+                    value={whatsapp.twilioAuthToken}
+                    onChange={(e) => onChange({ ...whatsapp, twilioAuthToken: e.target.value })}
+                    placeholder={twilioTokenIsMasked ? '(saved — paste a new token to replace)' : '32-char Twilio auth token'}
+                    className="pr-9 font-mono text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowTwilioToken((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-900 dark:hover:text-slate-100"
+                    aria-label={showTwilioToken ? 'Hide auth token' : 'Show auth token'}
+                  >
+                    {showTwilioToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                {twilioTokenIsMasked && (
+                  <Button
+                    variant="outline"
+                    type="button"
+                    onClick={() => onChange({ ...whatsapp, twilioAuthToken: '' })}
+                    title="Clear and replace the saved token"
+                  >
+                    Replace
+                  </Button>
+                )}
+              </div>
+            </FieldShell>
+            <FieldShell
+              label="Content SID"
+              span={2}
+              help="Twilio Content SID for your approved invoice template. Required only for template sends (e.g. first contact outside the 24-hour service window)."
+            >
+              <Input
+                value={whatsapp.twilioContentSid}
+                onChange={(e) => onChange({ ...whatsapp, twilioContentSid: e.target.value.trim() })}
+                placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                className="font-mono text-xs"
+              />
+            </FieldShell>
+          </div>
+        ) : (
+          /* ── Meta fields ─────────────────────────────────────── */
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <FieldShell label="Phone Number ID" required help="Meta Business Suite → WhatsApp → API Setup → “Phone number ID”">
               <Input
                 value={whatsapp.phoneNumberId}
                 onChange={(e) => onChange({ ...whatsapp, phoneNumberId: e.target.value.trim() })}
                 placeholder="e.g. 123456789012345"
               />
-              <div className="text-[10px] text-muted-foreground">
-                Meta Business Suite → WhatsApp → API Setup → &quot;Phone number ID&quot;
-              </div>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">WhatsApp Business Account ID (WABA ID)</Label>
+            </FieldShell>
+            <FieldShell label="WhatsApp Business Account ID" help="Optional. Useful for multi-phone accounts; not required to send.">
               <Input
                 value={whatsapp.businessAccountId}
                 onChange={(e) => onChange({ ...whatsapp, businessAccountId: e.target.value.trim() })}
                 placeholder="optional"
               />
-              <div className="text-[10px] text-muted-foreground">
-                Useful for multi-phone accounts; not required to send.
-              </div>
-            </div>
-            <div className="space-y-1 md:col-span-2">
-              <Label className="text-xs">Permanent Access Token *</Label>
+            </FieldShell>
+            <FieldShell
+              label="Permanent Access Token"
+              required
+              span={2}
+              help="Use a system-user permanent token in production — temporary tokens expire after 24 hours. Stored server-side; only the last 4 characters are ever returned to the browser."
+            >
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <Input
@@ -1221,7 +1356,7 @@ function WhatsappTab({
                   <button
                     type="button"
                     onClick={() => setShowToken((v) => !v)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-900 dark:hover:text-slate-100"
                     aria-label={showToken ? 'Hide access token' : 'Show access token'}
                     title={showToken ? 'Hide token' : 'Show token'}
                   >
@@ -1239,22 +1374,49 @@ function WhatsappTab({
                   </Button>
                 )}
               </div>
-              <div className="text-[10px] text-muted-foreground">
-                Use a <b>system-user permanent token</b> in production — temporary tokens
-                expire after 24 hours. Stored server-side; only the last 4 characters are
-                ever returned to the browser.
-              </div>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Graph API version</Label>
+            </FieldShell>
+            <FieldShell label="Graph API version" help="The Meta Graph API version your account uses.">
               <Input
                 value={whatsapp.apiVersion}
                 onChange={(e) => onChange({ ...whatsapp, apiVersion: e.target.value.trim() })}
                 placeholder="v21.0"
               />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Default customer country code</Label>
+            </FieldShell>
+          </div>
+        )}
+
+        <div className="flex justify-end pt-4 border-t border-slate-200 dark:border-slate-700">
+          <Button
+            onClick={async () => {
+              await onSave();
+              await onReload();
+            }}
+            disabled={saving}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white"
+          >
+            <Save className="w-4 h-4 mr-1.5" />
+            {saving ? 'Saving…' : `Save ${providerLabel} credentials`}
+          </Button>
+        </div>
+      </div>
+
+      {/* ─── STEP 03 — PREFERENCES ───────────────────────────────── */}
+      <StepHeader
+        num="03"
+        title="Send preferences"
+        description="Applied to every WhatsApp send, regardless of provider."
+        tone="blue"
+      />
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <FieldShell
+            label="Default customer country code"
+            help="Prepended to 10-digit customer numbers at send time."
+          >
+            <div className="flex">
+              <span className="inline-flex items-center px-3 border border-r-0 rounded-l-md bg-slate-100 dark:bg-slate-800 text-sm font-mono text-slate-600 dark:text-slate-300 select-none">
+                +
+              </span>
               <Input
                 value={whatsapp.defaultCountryCode}
                 onChange={(e) =>
@@ -1262,131 +1424,328 @@ function WhatsappTab({
                 }
                 placeholder="91"
                 maxLength={3}
+                className="rounded-l-none"
               />
-              <div className="text-[10px] text-muted-foreground">
-                Prepended to 10-digit customer numbers at send time.
-              </div>
             </div>
-          </div>
-
-          <div className="border-t pt-3 space-y-3">
-            <div className="font-semibold text-sm">Message template (optional)</div>
-            <div className="text-xs text-muted-foreground">
-              Required for the first contact outside Meta&apos;s 24-hour service window. The
-              4 body params sent (in order) are: customer name, invoice number, amount,
-              bill URL. Must be pre-approved in Meta Business Suite.
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-1">
-                <Label className="text-xs">Message template name</Label>
-                <Input
-                  value={whatsapp.messageTemplate}
-                  onChange={(e) => onChange({ ...whatsapp, messageTemplate: e.target.value.trim() })}
-                  placeholder="invoice_sent"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Template language code</Label>
-                <Input
-                  value={whatsapp.templateLanguage}
-                  onChange={(e) => onChange({ ...whatsapp, templateLanguage: e.target.value.trim() })}
-                  placeholder="en"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="flex gap-2">
-            <Button
-              onClick={async () => {
-                await onSave();
-                await onReload();
-              }}
-              disabled={saving}
-              className="bg-blue-600 hover:bg-blue-700"
-            >
-              <Save className="w-4 h-4 mr-1" />
-              {saving ? 'Saving…' : 'Save WhatsApp settings'}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Test send</CardTitle>
-          <CardDescription>
-            Send a plain-text test to any WhatsApp number. Every attempt is logged below,
-            so you can see exactly what Meta returned.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex gap-2">
-            <div className="flex flex-1 min-w-0">
-              <span
-                className="inline-flex items-center px-3 border border-r-0 rounded-l-md bg-muted text-sm font-mono text-muted-foreground select-none"
-                title={`Country code from settings (Default customer country code = ${countryCode})`}
-              >
-                +{countryCode}
-              </span>
+          </FieldShell>
+          {!isTwilio && (
+            <FieldShell label="Meta template language" help="ISO language code of your approved template, e.g. en, hi, es.">
               <Input
-                value={testPhone}
-                onChange={(e) => setTestPhone(e.target.value.replace(/\D/g, ''))}
-                placeholder="9876543210"
-                inputMode="numeric"
-                maxLength={15}
-                className="rounded-l-none flex-1"
+                value={whatsapp.templateLanguage}
+                onChange={(e) => onChange({ ...whatsapp, templateLanguage: e.target.value.trim() })}
+                placeholder="en"
               />
-            </div>
-            <Button
-              onClick={runTest}
-              disabled={testing || !whatsapp.enabled}
-              variant="outline"
-            >
-              <Send className="w-4 h-4 mr-1" />
-              {testing ? 'Sending…' : 'Test send'}
-            </Button>
-          </div>
-          <div className="text-[11px] text-muted-foreground">
-            {digitsOnly.length >= 10 ? (
-              <>
-                Will dial <span className="font-mono text-foreground">+{composedTestTo}</span>
-                {digitsOnly.length === 10 && (
-                  <> — country code <span className="font-mono">+{countryCode}</span> auto-added from settings.</>
-                )}
-              </>
-            ) : (
-              'Enter a 10-digit number; the country code above is applied automatically.'
-            )}
-          </div>
-          {!whatsapp.enabled && (
-            <div className="text-[11px] text-amber-700 dark:text-amber-400">
-              Enable WhatsApp above and save before testing.
-            </div>
+            </FieldShell>
           )}
-
-          <TestSendLog entries={whatsapp.testLog || []} />
-        </CardContent>
-      </Card>
-
-      <WebhookCard
-        whatsapp={whatsapp}
-        onChange={onChange}
-        onSave={onSave}
-        onReload={onReload}
-        saving={saving}
-      />
-
-      <div className="text-[11px] text-muted-foreground space-y-1 px-1">
-        <div><b>Meta Cloud API quick reference</b></div>
-        <div>• Free tier: 1,000 business-initiated conversations / month.</div>
-        <div>• Sends always originate from the Phone Number ID above — not your store&apos;s display phone.</div>
-        <div>
-          • For messages outside the 24-hour customer-service window, Meta requires a
-          pre-approved template — fill in the template name above.
+          <FieldShell
+            label={isTwilio ? 'Plain-text body fallback' : 'Meta template name'}
+            span={2}
+            help={
+              isTwilio
+                ? 'Template sends use the Content SID above. Plain-text uses the auto-built invoice body unless you override it here.'
+                : 'Pre-approved in Meta Business Suite. The 4 body params sent (in order) are: customer name, invoice number, amount, bill URL.'
+            }
+          >
+            <Input
+              value={whatsapp.messageTemplate}
+              onChange={(e) => onChange({ ...whatsapp, messageTemplate: e.target.value.trim() })}
+              placeholder={isTwilio ? '(uses the auto-generated message)' : 'invoice_sent'}
+            />
+          </FieldShell>
         </div>
       </div>
+
+      {/* ─── STEP 04 — TEST ───────────────────────────────────────── */}
+      <StepHeader
+        num="04"
+        title="Test the connection"
+        description="Send a plain-text test to any WhatsApp number. Every attempt is logged so you can see exactly what the provider returned."
+        tone="violet"
+      />
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900 space-y-4">
+        <div className="flex gap-2 flex-wrap">
+          <div className="flex flex-1 min-w-60">
+            <span
+              className="inline-flex items-center px-3 border border-r-0 rounded-l-md bg-slate-100 dark:bg-slate-800 text-sm font-mono text-slate-700 dark:text-slate-200 select-none"
+              title={`Country code from settings (Default customer country code = ${countryCode})`}
+            >
+              +{countryCode}
+            </span>
+            <Input
+              value={testPhone}
+              onChange={(e) => setTestPhone(e.target.value.replace(/\D/g, ''))}
+              placeholder="9876543210"
+              inputMode="numeric"
+              maxLength={15}
+              className="rounded-l-none flex-1"
+            />
+          </div>
+          <Button
+            onClick={runTest}
+            disabled={testing || !whatsapp.enabled}
+            className="bg-violet-600 hover:bg-violet-700 text-white"
+          >
+            <Send className="w-4 h-4 mr-1.5" />
+            {testing ? 'Sending…' : 'Send test message'}
+          </Button>
+        </div>
+        <div className="text-xs text-slate-600 dark:text-slate-400">
+          {digitsOnly.length >= 10 ? (
+            <>
+              Will dial <span className="font-mono font-medium text-slate-900 dark:text-slate-100">+{composedTestTo}</span>
+              {digitsOnly.length === 10 && (
+                <> — country code <span className="font-mono">+{countryCode}</span> auto-added from settings.</>
+              )}
+            </>
+          ) : (
+            'Enter a 10-digit number; the country code above is applied automatically.'
+          )}
+        </div>
+        {!whatsapp.enabled && (
+          <div className="text-xs text-amber-700 dark:text-amber-400 rounded-md border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 inline-flex items-center gap-2">
+            <AlertCircle className="w-3.5 h-3.5" />
+            Enable automatic sending above and save before testing.
+          </div>
+        )}
+
+        <TestSendLog entries={whatsapp.testLog || []} />
+      </div>
+
+      {/* ─── STEP 05 — WEBHOOK (Meta only) ───────────────────────── */}
+      {!isTwilio && (
+        <>
+          <StepHeader
+            num="05"
+            title="Delivery webhook"
+            description="Optional. Pushes delivery / read / failed status from Meta back into the app — visible per sale and on the test-send log above."
+            tone="amber"
+            label="Advanced"
+          />
+          <WebhookCard
+            whatsapp={whatsapp}
+            onChange={onChange}
+            onSave={onSave}
+            onReload={onReload}
+            saving={saving}
+          />
+        </>
+      )}
+
+      {/* ─── Quick reference ─────────────────────────────────────── */}
+      <div className="rounded-2xl border border-slate-200 bg-slate-50 dark:bg-slate-900/50 dark:border-slate-700 p-5">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">
+          {providerLabel} quick reference
+        </div>
+        <ul className="text-sm text-slate-700 dark:text-slate-300 space-y-1.5 list-disc list-inside marker:text-slate-400">
+          {isTwilio ? (
+            <>
+              <li>Sandbox: customers join by texting your join code to <span className="font-mono text-slate-900 dark:text-slate-100">+14155238886</span>. Production: use your purchased + approved business number.</li>
+              <li>From-Number is stored without the <span className="font-mono">whatsapp:</span> prefix — the server prepends it at send time.</li>
+              <li>Templates use the <span className="font-mono">HX…</span> Content SID. Body variables map in order: customer name, invoice number, amount, bill URL.</li>
+              <li>Delivery status callbacks are configured in Twilio Console, not here.</li>
+            </>
+          ) : (
+            <>
+              <li>Free tier: 1,000 business-initiated conversations / month.</li>
+              <li>Sends always originate from the Phone Number ID above — not your store&apos;s display phone.</li>
+              <li>For messages outside the 24-hour customer-service window, Meta requires a pre-approved template — fill in the template name above.</li>
+            </>
+          )}
+        </ul>
+      </div>
     </div>
+  );
+}
+
+/**
+ * Numbered step header — gives the WhatsApp tab a guided-setup feel.
+ * "01 · Choose your provider" with a small coloured icon tile and an
+ * optional right-aligned chip (e.g. "Saved" / "Not configured").
+ */
+function StepHeader({
+  num,
+  title,
+  description,
+  tone,
+  chip,
+  label,
+}: {
+  num: string;
+  title: string;
+  description?: string;
+  tone: 'emerald' | 'rose' | 'blue' | 'violet' | 'amber';
+  chip?: { label: string; icon: React.ReactNode; tone: 'emerald' | 'amber' | 'rose' };
+  label?: string;
+}) {
+  const toneTile: Record<typeof tone, string> = {
+    emerald: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300',
+    rose: 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300',
+    blue: 'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300',
+    violet: 'bg-violet-100 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300',
+    amber: 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300',
+  };
+  const chipTone: Record<NonNullable<typeof chip>['tone'], string> = {
+    emerald: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300',
+    amber: 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300',
+    rose: 'bg-rose-100 text-rose-800 dark:bg-rose-950/40 dark:text-rose-300',
+  };
+  return (
+    <div className="flex items-end justify-between gap-3 flex-wrap pt-2">
+      <div className="flex items-center gap-3 min-w-0">
+        <div className={`shrink-0 w-10 h-10 rounded-lg flex items-center justify-center font-bold text-sm ${toneTile[tone]}`}>
+          {num}
+        </div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-semibold text-base text-slate-900 dark:text-slate-100 leading-tight">
+              {title}
+            </h3>
+            {label && (
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 bg-slate-100 dark:bg-slate-800 dark:text-slate-400 px-2 py-0.5 rounded">
+                {label}
+              </span>
+            )}
+          </div>
+          {description && (
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">{description}</p>
+          )}
+        </div>
+      </div>
+      {chip && (
+        <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full ${chipTone[chip.tone]}`}>
+          {chip.icon}
+          {chip.label}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Form field shell with a strong label, optional required marker, optional
+ * column span, and readable help text below. Used everywhere in the
+ * WhatsApp tab to keep typography consistent.
+ */
+function FieldShell({
+  label,
+  required,
+  help,
+  span,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  help?: string;
+  span?: 1 | 2;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`space-y-1.5 ${span === 2 ? 'md:col-span-2' : ''}`}>
+      <Label className="text-sm font-medium text-slate-900 dark:text-slate-100">
+        {label}
+        {required && <span className="text-rose-600 ml-0.5">*</span>}
+      </Label>
+      {children}
+      {help && <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">{help}</p>}
+    </div>
+  );
+}
+
+/** Small read-only "verified profile" cell with label + value. */
+function ProfileField({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value?: string | null;
+  mono?: boolean;
+}) {
+  return (
+    <div>
+      <div className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400 font-medium">
+        {label}
+      </div>
+      <div className={`text-sm font-medium text-slate-900 dark:text-slate-100 mt-0.5 ${mono ? 'font-mono' : ''}`}>
+        {value || '—'}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Provider chooser tile. Clickable card with a brand-coloured monogram on
+ * the left, name + tagline, and value-prop bullets. Active state gets a
+ * filled border + gradient background + "Active" pill so the choice is
+ * unmissable; inactive tiles stay clean white with hover lift.
+ */
+function ProviderTile({
+  active,
+  title,
+  tagline,
+  bullets,
+  onSelect,
+  tone,
+  monogram,
+}: {
+  active: boolean;
+  title: string;
+  tagline: string;
+  bullets: string[];
+  onSelect: () => void;
+  tone: 'emerald' | 'rose';
+  monogram: string;
+}) {
+  const monogramClass =
+    tone === 'emerald'
+      ? 'bg-gradient-to-br from-emerald-500 to-emerald-600 text-white'
+      : 'bg-gradient-to-br from-rose-500 to-rose-600 text-white';
+  const activeBorder =
+    tone === 'emerald'
+      ? 'border-emerald-500 ring-1 ring-emerald-500 bg-gradient-to-br from-emerald-50 to-white dark:from-emerald-950/30 dark:to-slate-900'
+      : 'border-rose-500 ring-1 ring-rose-500 bg-gradient-to-br from-rose-50 to-white dark:from-rose-950/30 dark:to-slate-900';
+  const idleBorder =
+    'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm dark:border-slate-700 dark:bg-slate-900';
+  const pillClass =
+    tone === 'emerald'
+      ? 'bg-emerald-600 text-white'
+      : 'bg-rose-600 text-white';
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`text-left rounded-2xl border p-5 transition-all duration-150 ${active ? activeBorder : idleBorder}`}
+    >
+      <div className="flex items-start gap-4">
+        <div className={`shrink-0 w-12 h-12 rounded-xl flex items-center justify-center font-bold text-lg shadow-sm ${monogramClass}`}>
+          {monogram}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <div className="font-semibold text-[15px] text-slate-900 dark:text-slate-100 leading-tight">
+              {title}
+            </div>
+            {active && (
+              <span className={`inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full ${pillClass}`}>
+                <CheckCircle2 className="w-3 h-3" />
+                Active
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">{tagline}</div>
+          <ul className="text-xs text-slate-700 dark:text-slate-300 space-y-1.5 mt-3">
+            {bullets.map((b, i) => (
+              <li key={i} className="flex items-start gap-2">
+                <span
+                  className={`mt-1.5 w-1 h-1 rounded-full shrink-0 ${tone === 'emerald' ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                />
+                <span className="leading-snug">{b}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </button>
   );
 }
 
