@@ -24,7 +24,14 @@ import Store from '../models/Store.js';
 import Organization from '../models/Organization.js';
 import { ok, AppError } from '../utils/response.js';
 import { authenticate, JWT_SECRET } from '../middleware/auth.js';
+import { rateLimit } from '../middleware/rateLimit.js';
 import { permissionsFor } from '../rbac/matrix.js';
+
+// Brute-force / credential-stuffing guard on the login endpoints. Keyed on
+// IP + submitted email so one attacker can't lock out a victim and one IP
+// can't fan out across accounts. (In-memory — see scaling plan for the
+// Redis-backed version needed once the API runs multi-instance.)
+const loginRateLimit = rateLimit({ key: 'login', limit: 10, windowMs: 15 * 60_000 });
 import { subscriptionView } from '../utils/subscription.js';
 import {
   USER_TYPE,
@@ -168,7 +175,7 @@ async function userResponse(resolved, currentStoreId) {
 // ---------- TENANT LOGIN ------------------------------------------------
 // Used by the tenant POS Next.js app. Looks up tenantadmins first, then
 // users (staff). Never touches superadmins.
-router.post('/login', async (req, res, next) => {
+router.post('/login', loginRateLimit, async (req, res, next) => {
   try {
     const { email, password } = req.body || {};
     const resolved = await findTenantAccountByEmail(email);
@@ -197,7 +204,7 @@ router.post('/login', async (req, res, next) => {
 // ---------- VENDOR / SUPER ADMIN LOGIN ----------------------------------
 // Used exclusively by the separate vendor portal. Trust boundary: the
 // tenant app does NOT have a button that hits this endpoint.
-router.post('/super-admin/login', async (req, res, next) => {
+router.post('/super-admin/login', loginRateLimit, async (req, res, next) => {
   try {
     const { email, password } = req.body || {};
     const resolved = await findSuperAdminByEmail(email);

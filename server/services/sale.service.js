@@ -226,18 +226,21 @@ export const SaleService = {
         });
         const { paid, change } = BillingEngine.validatePayments(input.payments || [], cart.grandTotal);
 
-        // Sequential invoice number — increment on the live Store doc.
-        const store = await Store.findById(storeId).session(mSession);
-        const invoiceNumber = nextInvoiceNumber(store);
-        await store.save({ session: mSession });
+        // Sequential invoice number via the range-pre-allocation allocator.
+        // This is intentionally NOT a write inside the sale transaction — the
+        // allocator reserves blocks with its own atomic op, so there's no
+        // per-store hot-doc contention serializing concurrent sales. (See
+        // utils/sequence.js + production-scaling-plan §1.)
+        const invoiceNumber = await nextInvoiceNumber(storeDoc);
 
+        // amountPaid = actual money received. Every non-credit tender counts
+        // (cash, upi, card, bank, wallet); only 'credit' is an IOU that lands
+        // later via /sales/:id/payment. 'bank' was previously omitted, which
+        // wrongly marked a fully-paid bank sale as a credit sale and inflated
+        // the customer's outstanding.
         const cashPaid = (input.payments || [])
-          .filter((p) => ['cash', 'upi', 'card'].includes(p.mode))
+          .filter((p) => p.mode && p.mode !== 'credit')
           .reduce((s, p) => s + Number(p.amount || 0), 0);
-        // amountPaid = actual money received. Credit-mode amounts are IOUs, not
-        // money in hand, so they don't count here. This matters because the
-        // outstanding-balance and "Record payment" flow rely on amountPaid being
-        // truthful — credit IOUs come in later via /sales/:id/payment.
         const amountPaidForDoc = Math.min(cashPaid, cart.grandTotal);
 
         const saleCreatedAt = new Date();
@@ -288,12 +291,12 @@ export const SaleService = {
                 phone: customer.phone,
                 email: customer.email || '',
                 gstNumber: customer.gstNumber,
-                stateCode: customer.stateCode || store.stateCode,
+                stateCode: customer.stateCode || storeDoc.stateCode,
                 address: customer.address,
               },
               // Place of Supply: customer's state, falls back to the store's state
               // for walk-ins. Drives GSTR-1 inter/intra-state classification.
-              placeOfSupply: customer.stateCode || store.stateCode || '',
+              placeOfSupply: customer.stateCode || storeDoc.stateCode || '',
               invoiceType: VALID_INVOICE_TYPES.has(input.invoiceType) ? input.invoiceType : 'regular',
               exportDetails: input.exportDetails || undefined,
               hasWarranty,
@@ -320,7 +323,10 @@ export const SaleService = {
               saleType: 'pos',
               status: 'completed',
               notes: input.notes || '',
-              idempotencyKey: input?.idempotencyKey ? String(input.idempotencyKey) : null,
+              // Only set the key when the client supplied one. Writing `null`
+              // would make the partial unique index collide across keyless
+              // sales — leave the field ABSENT instead. (See Sale.js index.)
+              ...(input?.idempotencyKey ? { idempotencyKey: String(input.idempotencyKey) } : {}),
               createdBy: userId,
               createdAt: saleCreatedAt,
             },
@@ -437,10 +443,18 @@ export const SaleService = {
       });
     }
 
-    const subtotal = round2(returnedItems.reduce((s, l) => s + l.basePrice, 0));
+    // Build the credit-note totals from the per-line values (which are already
+    // correctly proportioned for both GST-inclusive and exclusive pricing),
+    // NOT from gross basePrice. Using `basePrice` here double-counted tax on
+    // inclusive lines and over-refunded the customer. grandTotal is the sum of
+    // the line totals actually paid; subtotal is the ex-tax taxable base so
+    // `subtotal + tax == grandTotal` holds and the ledger reversal
+    // (revenue = grandTotal − tax) lands on the correct taxable figure.
+    const taxableTotal = round2(returnedItems.reduce((s, l) => s + (l.taxableAmount || 0), 0));
     const totalDiscount = round2(returnedItems.reduce((s, l) => s + (l.discountAmount || 0), 0));
     const totalTax = round2(returnedItems.reduce((s, l) => s + l.totalTax, 0));
-    const grandTotal = Number((subtotal - totalDiscount + totalTax).toFixed(2));
+    const grandTotal = round2(returnedItems.reduce((s, l) => s + (l.totalAmount || 0), 0));
+    const subtotal = taxableTotal;
     const refundMode = ['cash', 'bank', 'credit'].includes(input?.refundMode)
       ? input.refundMode
       : 'cash';

@@ -1,6 +1,8 @@
+import mongoose from 'mongoose';
 import LedgerEntry from '../models/LedgerEntry.js';
 import Account from '../models/Account.js';
 import { seedStoreAccounts } from '../services/seedStoreAccounts.js';
+import { AppError } from '../utils/response.js';
 
 async function push(entry, session) {
   await LedgerEntry.create([{ ...entry }], { session });
@@ -195,6 +197,19 @@ export const LedgerEngine = {
     { storeId, supplierId, purchaseId, grnNumber, subtotal, totalTax, grandTotal, createdBy },
     { session } = {},
   ) {
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    // The supplier payable MUST equal the sum of the debits (expense + input
+    // GST), or the voucher is unbalanced and the trial balance breaks. Derive
+    // it here instead of trusting the caller's `grandTotal` — if they ever
+    // diverge (discount/freight/round-off folded into grandTotal only), the
+    // double-entry invariant would silently fail.
+    const debitTotal = round2(round2(subtotal) + round2(totalTax));
+    if (grandTotal != null && Math.abs(round2(grandTotal) - debitTotal) > 0.01) {
+      throw new Error(
+        `[ledger] Purchase ${grnNumber} grandTotal (${grandTotal}) != subtotal+tax (${debitTotal}); refusing to post an unbalanced voucher.`,
+      );
+    }
+    const payable = debitTotal;
     const purchaseAccId = await resolveAccount(storeId, 'Purchase Expense', session);
     await push(
       {
@@ -237,7 +252,7 @@ export const LedgerEngine = {
         entryType: 'credit',
         accountType: 'payable',
         accountId: supplierId,
-        amount: grandTotal,
+        amount: payable,
         referenceType: 'purchase',
         referenceId: purchaseId,
         narration: `Payable to supplier ${grnNumber}`,
@@ -457,6 +472,15 @@ export const LedgerEngine = {
     { storeId, supplierId, purchaseId, dnNumber, subtotal, totalTax, grandTotal, createdBy },
     { session } = {},
   ) {
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    // Payable debit must equal the credits (expense + input GST reversal).
+    const creditTotal = round2(round2(subtotal) + round2(totalTax));
+    if (grandTotal != null && Math.abs(round2(grandTotal) - creditTotal) > 0.01) {
+      throw new Error(
+        `[ledger] Purchase return ${dnNumber} grandTotal (${grandTotal}) != subtotal+tax (${creditTotal}); refusing to post an unbalanced voucher.`,
+      );
+    }
+    const payable = creditTotal;
     const purchaseAccId = await resolveAccount(storeId, 'Purchase Expense', session);
     await push(
       {
@@ -497,7 +521,7 @@ export const LedgerEngine = {
         entryType: 'debit', // reduces what we owe supplier
         accountType: 'payable',
         accountId: supplierId,
-        amount: grandTotal,
+        amount: payable,
         referenceType: 'return',
         referenceId: purchaseId,
         narration: `Debit note to supplier ${dnNumber}`,
@@ -509,6 +533,33 @@ export const LedgerEngine = {
   },
 
   async postVoucher({ storeId, voucherId, voucherType, voucherNumber, entries, narration, createdBy }, { session } = {}) {
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    // Last line of defense for the double-entry invariant: manual vouchers are
+    // the one path with human-entered Dr/Cr. Reject empties, non-positive /
+    // NaN amounts, and any voucher where Σ debits ≠ Σ credits — never persist
+    // an unbalanced journal even if a controller/validator was bypassed.
+    if (!Array.isArray(entries) || entries.length < 2) {
+      throw new AppError('VOUCHER_INVALID', 'A voucher needs at least two entries', 400);
+    }
+    let debits = 0;
+    let credits = 0;
+    for (const e of entries) {
+      const amt = round2(e.amount);
+      if (!Number.isFinite(amt) || amt <= 0) {
+        throw new AppError('VOUCHER_INVALID', `Voucher entry amount must be a positive number (got ${e.amount})`, 400);
+      }
+      if (e.entryType === 'debit') debits = round2(debits + amt);
+      else if (e.entryType === 'credit') credits = round2(credits + amt);
+      else throw new AppError('VOUCHER_INVALID', `Voucher entry type must be 'debit' or 'credit' (got ${e.entryType})`, 400);
+    }
+    if (Math.abs(debits - credits) > 0.01) {
+      throw new AppError(
+        'VOUCHER_UNBALANCED',
+        `Voucher out of balance: debits ₹${debits} ≠ credits ₹${credits}`,
+        400,
+      );
+    }
+
     for (const e of entries) {
       await push(
         {
@@ -516,7 +567,7 @@ export const LedgerEngine = {
           entryType: e.entryType,
           accountType: e.accountType || 'journal',
           accountId: e.accountId,
-          amount: Number(e.amount),
+          amount: round2(e.amount),
           referenceType: 'voucher',
           referenceId: voucherId,
           narration: narration || `${voucherType} ${voucherNumber}`,
@@ -530,7 +581,7 @@ export const LedgerEngine = {
 
   async verifyBalance(storeId) {
     const rows = await LedgerEntry.aggregate([
-      { $match: { storeId: typeof storeId === 'string' ? require('mongoose').Types.ObjectId.createFromHexString(storeId) : storeId } },
+      { $match: { storeId: typeof storeId === 'string' ? mongoose.Types.ObjectId.createFromHexString(storeId) : storeId } },
       {
         $group: {
           _id: '$entryType',

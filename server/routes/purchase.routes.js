@@ -1,8 +1,15 @@
 import { Router } from 'express';
 import { ok } from '../utils/response.js';
 import { PurchaseService } from '../services/purchase.service.js';
+import { requirePermission } from '../middleware/rbac.js';
 
 const router = Router();
+
+// PO sub-actions (submit / receive / pay / close / cancel / return) move stock,
+// money, or ledger — they require purchases:update. Creating a draft PO stays
+// at the create level (enforceResource) so a cashier can raise one, but only
+// manager/admin can receive goods, pay suppliers, or cancel/return.
+const canUpdatePurchase = requirePermission('purchases', 'update');
 
 router.get('/', async (req, res, next) => {
   try {
@@ -59,7 +66,7 @@ router.post('/', async (req, res, next) => {
   }
 });
 
-router.post('/:id/submit', async (req, res, next) => {
+router.post('/:id/submit', canUpdatePurchase, async (req, res, next) => {
   try {
     res.json(ok(await PurchaseService.submit({ storeId: req.user.storeId, id: req.params.id })));
   } catch (err) {
@@ -67,7 +74,7 @@ router.post('/:id/submit', async (req, res, next) => {
   }
 });
 
-router.post('/:id/grn', async (req, res, next) => {
+router.post('/:id/grn', canUpdatePurchase, async (req, res, next) => {
   try {
     const result = await PurchaseService.receiveGrn({
       storeId: req.user.storeId,
@@ -81,7 +88,7 @@ router.post('/:id/grn', async (req, res, next) => {
   }
 });
 
-router.post('/:id/pay', async (req, res, next) => {
+router.post('/:id/pay', canUpdatePurchase, async (req, res, next) => {
   try {
     res.json(
       ok(
@@ -98,7 +105,7 @@ router.post('/:id/pay', async (req, res, next) => {
   }
 });
 
-router.post('/:id/pre-close', async (req, res, next) => {
+router.post('/:id/pre-close', canUpdatePurchase, async (req, res, next) => {
   try {
     res.json(
       ok(
@@ -110,7 +117,7 @@ router.post('/:id/pre-close', async (req, res, next) => {
   }
 });
 
-router.post('/:id/return', async (req, res, next) => {
+router.post('/:id/return', canUpdatePurchase, async (req, res, next) => {
   try {
     const dn = await PurchaseService.returnPurchase({
       storeId: req.user.storeId,
@@ -124,7 +131,7 @@ router.post('/:id/return', async (req, res, next) => {
   }
 });
 
-router.post('/:id/cancel', async (req, res, next) => {
+router.post('/:id/cancel', canUpdatePurchase, async (req, res, next) => {
   try {
     res.json(
       ok(

@@ -12,9 +12,14 @@ import {
   Camera, Upload, Scan, FileText, CheckCircle2, AlertCircle, RefreshCcw, ArrowRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { api, ApiError } from '@/lib/api';
-import { runOcr } from '@/lib/ocr';
-import { extractInvoiceFields, type ExtractedInvoice } from '@/lib/invoice-extractor';
+import { api } from '@/lib/api';
+import { scanBill, isSupportedBillFile, type ScanResult } from '@/lib/bill-scan';
+import { isPdf } from '@/lib/pdf-extract';
+import {
+  extractInvoiceFields,
+  type ExtractedInvoice,
+  type ExtractedLineItem,
+} from '@/lib/invoice-extractor';
 
 interface Supplier {
   _id: string;
@@ -31,10 +36,13 @@ export default function ScanBillPage() {
   const [step, setStep] = useState<Step>('upload');
   const [file, setFile] = useState<File | null>(null);
   const [imageUrl, setImageUrl] = useState<string>('');
+  const [isPdfFile, setIsPdfFile] = useState(false);
   const [progress, setProgress] = useState({ status: '', pct: 0 });
   const [extracted, setExtracted] = useState<ExtractedInvoice | null>(null);
   const [edited, setEdited] = useState<Partial<ExtractedInvoice>>({});
+  const [lineItems, setLineItems] = useState<ExtractedLineItem[]>([]);
   const [confidence, setConfidence] = useState(0);
+  const [scanSource, setScanSource] = useState<ScanResult['source'] | null>(null);
   const [scanMs, setScanMs] = useState(0);
 
   // Suppliers — for the post-scan "match GSTIN to a known supplier" step.
@@ -58,6 +66,7 @@ export default function ScanBillPage() {
         sgst: extracted.sgst,
         igst: extracted.igst,
       });
+      setLineItems(extracted.lineItems || []);
     }
   }, [extracted]);
 
@@ -72,42 +81,70 @@ export default function ScanBillPage() {
     setFile(null);
     if (imageUrl) URL.revokeObjectURL(imageUrl);
     setImageUrl('');
+    setIsPdfFile(false);
     setExtracted(null);
     setEdited({});
+    setLineItems([]);
     setProgress({ status: '', pct: 0 });
     setConfidence(0);
+    setScanSource(null);
     setScanMs(0);
   };
 
   const handleFile = async (f: File) => {
-    if (!f.type.startsWith('image/')) {
-      toast.error('Upload an image (PNG, JPG, JPEG). PDF support coming soon.');
+    if (!isSupportedBillFile(f)) {
+      toast.error('Upload an image (PNG, JPG, WEBP) or a PDF.');
       return;
     }
+    const pdf = isPdf(f);
     setFile(f);
-    setImageUrl(URL.createObjectURL(f));
+    setIsPdfFile(pdf);
+    // Images get an inline preview; PDFs we don't render in an <img>.
+    setImageUrl(pdf ? '' : URL.createObjectURL(f));
     setStep('scanning');
     setProgress({ status: 'starting', pct: 0 });
     try {
-      const ocr = await runOcr(f, (p) => {
+      const scan = await scanBill(f, (p) => {
         setProgress({ status: p.status, pct: Math.round((p.progress || 0) * 100) });
       });
-      setConfidence(ocr.confidence);
-      setScanMs(ocr.durationMs);
-      const parsed = extractInvoiceFields(ocr.text);
+      setConfidence(scan.confidence);
+      setScanSource(scan.source);
+      setScanMs(scan.durationMs);
+      const parsed = extractInvoiceFields(scan.text);
       setExtracted(parsed);
       setStep('review');
       const filled = parsed.confidence.fields;
       const total = parsed.confidence.total;
-      if (filled === 0) {
-        toast.error('OCR ran but couldn\'t extract any structured fields. Check image clarity.');
+      const nItems = parsed.lineItems.length;
+      if (filled === 0 && nItems === 0) {
+        toast.error('Couldn\'t extract any fields. For a photo, try a clearer, well-lit image; for a scanned PDF, a higher-resolution scan.');
       } else {
-        toast.success(`Extracted ${filled}/${total} fields · OCR confidence ${ocr.confidence}%`);
+        const src =
+          scan.source === 'pdf-text'
+            ? 'read directly from PDF text'
+            : scan.source === 'pdf-ocr'
+              ? 'OCR\'d from scanned PDF'
+              : `OCR'd · ${scan.confidence}% confidence`;
+        toast.success(`Extracted ${filled}/${total} header fields + ${nItems} line item${nItems === 1 ? '' : 's'} · ${src}`);
       }
     } catch (err) {
-      toast.error(`OCR failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+      toast.error(`Scan failed: ${err instanceof Error ? err.message : 'unknown error'}`);
       setStep('upload');
     }
+  };
+
+  // --- Line-item editing helpers ------------------------------------------
+  const updateLineItem = (idx: number, patch: Partial<ExtractedLineItem>) => {
+    setLineItems((prev) => prev.map((li, i) => (i === idx ? { ...li, ...patch } : li)));
+  };
+  const removeLineItem = (idx: number) => {
+    setLineItems((prev) => prev.filter((_, i) => i !== idx));
+  };
+  const addLineItem = () => {
+    setLineItems((prev) => [
+      ...prev,
+      { description: '', hsnCode: null, quantity: null, rate: null, amount: null, gstRate: null },
+    ]);
   };
 
   const goCreatePurchase = () => {
@@ -117,6 +154,7 @@ export default function ScanBillPage() {
       'ocr-bill-draft',
       JSON.stringify({
         ...edited,
+        lineItems: lineItems.filter((li) => li.description.trim()),
         matchedSupplierId: matchedSupplier?._id || null,
         rawText: extracted?.rawText || '',
       }),
@@ -149,8 +187,8 @@ export default function ScanBillPage() {
       {step === 'upload' && (
         <Card>
           <CardHeader>
-            <CardTitle>Upload an invoice image</CardTitle>
-            <CardDescription>JPG / PNG / WEBP up to 10 MB. Clearer photos extract more fields.</CardDescription>
+            <CardTitle>Upload an invoice (PDF or image)</CardTitle>
+            <CardDescription>PDF, JPG, PNG or WEBP up to 10 MB. Digital PDFs read most accurately.</CardDescription>
           </CardHeader>
           <CardContent>
             <label
@@ -159,7 +197,7 @@ export default function ScanBillPage() {
             >
               <input
                 type="file"
-                accept="image/*"
+                accept="image/*,application/pdf"
                 id="bill-file"
                 className="hidden"
                 onChange={(e) => {
@@ -170,15 +208,15 @@ export default function ScanBillPage() {
               <Upload className="w-10 h-10 mx-auto mb-3 text-blue-600" />
               <div className="font-medium">Click to upload, or drag a file here</div>
               <div className="text-xs text-muted-foreground mt-1">
-                For best results: well-lit, in-focus, fully cropped to the invoice.
+                PDF bills are read directly; photos work best well-lit, in-focus and cropped to the invoice.
               </div>
             </label>
             <div className="mt-4 text-[11px] text-muted-foreground space-y-1 bg-muted/30 rounded p-3">
               <div className="font-semibold uppercase">How it works</div>
-              <div>1. Tesseract.js runs in your browser — no upload to any cloud server, your invoice never leaves your machine.</div>
-              <div>2. First run downloads ~10 MB of the English language model (one-time).</div>
-              <div>3. Recognition takes 5-30 seconds depending on image size + your device.</div>
-              <div>4. Extracted fields show side-by-side with the image; you review and click <b>Use this</b> to pre-fill a new Purchase Order.</div>
+              <div>1. Everything runs in your browser — no upload to any cloud server, your invoice never leaves your machine.</div>
+              <div>2. <b>Digital PDFs</b> (Tally / Zoho / Busy etc.) are read straight from the text layer — near-perfect, instant.</div>
+              <div>3. <b>Scanned PDFs &amp; photos</b> are OCR&apos;d (Tesseract); first run downloads a ~10 MB language model, one-time.</div>
+              <div>4. Header fields <b>and product line items</b> show for review; edit anything, then pre-fill a new Purchase Order.</div>
             </div>
           </CardContent>
         </Card>
@@ -191,20 +229,27 @@ export default function ScanBillPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {imageUrl && (
+              {imageUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={imageUrl} alt="Invoice preview" className="max-h-96 rounded border w-full object-contain bg-muted" />
+              ) : (
+                <div className="flex flex-col items-center justify-center rounded border bg-muted/40 p-8 text-muted-foreground">
+                  <FileText className="w-12 h-12 mb-2" />
+                  <div className="text-sm font-medium">{file?.name || 'PDF document'}</div>
+                  <div className="text-xs">Reading PDF…</div>
+                </div>
               )}
               <div className="space-y-3">
                 <div className="text-sm">
                   <div className="text-xs uppercase text-muted-foreground">Status</div>
-                  <div className="font-medium capitalize">{progress.status || 'starting'}</div>
+                  <div className="font-medium capitalize">{(progress.status || 'starting').replace(/-/g, ' ')}</div>
                 </div>
                 <Progress value={progress.pct} />
                 <div className="text-xs text-muted-foreground">{progress.pct}% complete</div>
                 <div className="text-[11px] text-muted-foreground bg-muted/30 rounded p-2 mt-3">
-                  First scan takes longer because Tesseract downloads the language model.
-                  Subsequent scans on this device are 5-10× faster.
+                  {isPdfFile
+                    ? 'Digital PDFs read instantly. Scanned PDFs are rendered then OCR\'d, which takes longer.'
+                    : 'First scan takes longer because Tesseract downloads the language model. Subsequent scans on this device are 5-10× faster.'}
                 </div>
               </div>
             </div>
@@ -223,7 +268,10 @@ export default function ScanBillPage() {
                     Review extracted fields
                   </CardTitle>
                   <CardDescription>
-                    OCR confidence {confidence}% · {extracted.confidence.fields}/{extracted.confidence.total} fields auto-filled · scan took {(scanMs / 1000).toFixed(1)}s.
+                    {scanSource === 'pdf-text'
+                      ? 'Read directly from the PDF text layer (high accuracy)'
+                      : `OCR confidence ${confidence}%`}
+                    {' · '}{extracted.confidence.fields}/{extracted.confidence.total} header fields · {lineItems.length} line item{lineItems.length === 1 ? '' : 's'} · {(scanMs / 1000).toFixed(1)}s.
                     Edit anything that&apos;s wrong, then create the Purchase Order.
                   </CardDescription>
                 </div>
@@ -234,9 +282,15 @@ export default function ScanBillPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {imageUrl && (
+                {imageUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={imageUrl} alt="Invoice" className="max-h-[600px] rounded border w-full object-contain bg-muted" />
+                ) : (
+                  <div className="flex flex-col items-center justify-center rounded border bg-muted/40 p-8 text-muted-foreground min-h-40">
+                    <FileText className="w-12 h-12 mb-2" />
+                    <div className="text-sm font-medium break-all text-center">{file?.name || 'PDF document'}</div>
+                    <div className="text-xs mt-1">PDF — preview not shown; check the raw text below.</div>
+                  </div>
                 )}
                 <div className="space-y-3">
                   <FieldRow
@@ -326,6 +380,106 @@ export default function ScanBillPage() {
                       </div>
                     </div>
                   )}
+                </div>
+              </div>
+
+              {/* Product line items — full width below the header fields */}
+              <div className="border-t pt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <Label className="text-sm font-semibold">Product line items</Label>
+                    <p className="text-xs text-muted-foreground">
+                      {lineItems.length
+                        ? 'Review each row — fix descriptions, quantities and rates the scan got wrong.'
+                        : 'No line items detected. Add them manually or fix on the next screen.'}
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={addLineItem}>+ Add row</Button>
+                </div>
+                <div className="overflow-x-auto border rounded">
+                  <table className="w-full text-xs">
+                    <thead className="bg-muted/50">
+                      <tr className="text-left">
+                        <th className="p-2 min-w-48">Description</th>
+                        <th className="p-2 w-24">HSN</th>
+                        <th className="p-2 w-20">Qty</th>
+                        <th className="p-2 w-24">Rate</th>
+                        <th className="p-2 w-24">Amount</th>
+                        <th className="p-2 w-16">GST%</th>
+                        <th className="p-2 w-8"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lineItems.length === 0 && (
+                        <tr>
+                          <td colSpan={7} className="p-3 text-center text-muted-foreground">
+                            No rows. Click “+ Add row”.
+                          </td>
+                        </tr>
+                      )}
+                      {lineItems.map((li, idx) => (
+                        <tr key={idx} className="border-t">
+                          <td className="p-1">
+                            <Input
+                              value={li.description}
+                              onChange={(e) => updateLineItem(idx, { description: e.target.value })}
+                              className="h-7 text-xs"
+                              placeholder="Product name"
+                            />
+                          </td>
+                          <td className="p-1">
+                            <Input
+                              value={li.hsnCode || ''}
+                              onChange={(e) => updateLineItem(idx, { hsnCode: e.target.value || null })}
+                              className="h-7 text-xs font-mono"
+                            />
+                          </td>
+                          <td className="p-1">
+                            <Input
+                              type="number"
+                              value={li.quantity?.toString() || ''}
+                              onChange={(e) => updateLineItem(idx, { quantity: Number(e.target.value) || null })}
+                              className="h-7 text-xs"
+                            />
+                          </td>
+                          <td className="p-1">
+                            <Input
+                              type="number"
+                              value={li.rate?.toString() || ''}
+                              onChange={(e) => updateLineItem(idx, { rate: Number(e.target.value) || null })}
+                              className="h-7 text-xs"
+                            />
+                          </td>
+                          <td className="p-1">
+                            <Input
+                              type="number"
+                              value={li.amount?.toString() || ''}
+                              onChange={(e) => updateLineItem(idx, { amount: Number(e.target.value) || null })}
+                              className="h-7 text-xs"
+                            />
+                          </td>
+                          <td className="p-1">
+                            <Input
+                              type="number"
+                              value={li.gstRate?.toString() || ''}
+                              onChange={(e) => updateLineItem(idx, { gstRate: Number(e.target.value) || null })}
+                              className="h-7 text-xs"
+                            />
+                          </td>
+                          <td className="p-1 text-center">
+                            <button
+                              type="button"
+                              onClick={() => removeLineItem(idx)}
+                              className="text-red-500 hover:text-red-700 text-sm"
+                              title="Remove row"
+                            >
+                              ×
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
 

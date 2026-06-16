@@ -1,3 +1,5 @@
+import { claimSequence } from './sequence.js';
+
 function calcEan13CheckDigit(twelve) {
   let sum = 0;
   for (let i = 0; i < 12; i++) {
@@ -23,9 +25,18 @@ export function generateEan13Barcode({ prefix = '890' } = {}) {
   return `${twelve}${calcEan13CheckDigit(twelve)}`;
 }
 
-export function nextInvoiceNumber(storeDoc) {
-  storeDoc.invoiceCounter = (storeDoc.invoiceCounter || 0) + 1;
+/**
+ * Next sequential invoice number — now backed by the range-pre-allocation
+ * sequence allocator (see utils/sequence.js) instead of incrementing the
+ * Store document inside the sale transaction. This removes the per-store
+ * hot-doc contention that capped billing throughput. The Store's legacy
+ * `invoiceCounter` is used only to seed continuity on first claim.
+ *
+ * Async now: callers must `await`. Format is unchanged (`<PREFIX>-<YYYY>-#####`).
+ */
+export async function nextInvoiceNumber(storeDoc) {
+  const seq = await claimSequence(storeDoc._id, 'invoice', storeDoc.invoiceCounter || 0);
   const year = new Date().getFullYear();
-  const padded = String(storeDoc.invoiceCounter).padStart(5, '0');
+  const padded = String(seq).padStart(5, '0');
   return `${storeDoc.invoicePrefix || 'INV'}-${year}-${padded}`;
 }

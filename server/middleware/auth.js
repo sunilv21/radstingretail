@@ -9,6 +9,7 @@
  * `userType`. We derive it from the legacy `role` claim so old sessions
  * still work without forcing a re-login.
  */
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { AppError } from '../utils/response.js';
 import {
@@ -18,7 +19,31 @@ import {
 } from '../services/accountLookup.js';
 import Store from '../models/Store.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+/**
+ * JWT signing/verification secret. SECURITY: never fall back to a hard-coded,
+ * publicly-known value — that lets anyone forge a super_admin token and take
+ * over the whole platform. In production a missing JWT_SECRET is a hard,
+ * fail-closed boot error. In development we generate a random ephemeral
+ * secret per process (tokens just don't survive a restart) so local runs work
+ * without shipping a known default.
+ */
+function resolveJwtSecret() {
+  const fromEnv = process.env.JWT_SECRET;
+  if (fromEnv && fromEnv.length >= 16) return fromEnv;
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'JWT_SECRET is required in production and must be at least 16 characters. Refusing to start with an insecure default.',
+    );
+  }
+  const ephemeral = crypto.randomBytes(32).toString('hex');
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[auth] JWT_SECRET not set — using a random ephemeral secret for this dev session. Set JWT_SECRET in your .env for stable tokens.',
+  );
+  return ephemeral;
+}
+
+const JWT_SECRET = resolveJwtSecret();
 
 export async function authenticate(req, _res, next) {
   const token = req.headers.authorization?.split(' ')[1];

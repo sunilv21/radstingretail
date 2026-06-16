@@ -43,8 +43,14 @@ function computeItemTax(
   let sgst = 0
   let igst = 0
 
+  // Ex-tax value of the line before discount — see server gst.engine.js.
+  // For inclusive lines this divides the tax back out so the cart subtotal
+  // doesn't stack GST on a price that already includes it.
+  let subtotalExTax: number
+
   if (inclusive && gstRate > 0) {
     taxableAmount = round2(grossAfterDiscount / (1 + gstRate / 100))
+    subtotalExTax = round2(basePrice / (1 + gstRate / 100))
     const tax = round2(grossAfterDiscount - taxableAmount)
     if (isSameState) {
       cgst = round2(tax / 2)
@@ -54,6 +60,7 @@ function computeItemTax(
     }
   } else {
     taxableAmount = grossAfterDiscount
+    subtotalExTax = round2(basePrice)
     if (isSameState) {
       cgst = round2((taxableAmount * gstRate) / 200)
       sgst = round2((taxableAmount * gstRate) / 200)
@@ -65,6 +72,7 @@ function computeItemTax(
   const totalAmount = round2(taxableAmount + totalTax)
   return {
     basePrice: round2(basePrice),
+    subtotalExTax,
     discountAmount: round2(discountAmount),
     taxableAmount,
     gstRate,
@@ -95,6 +103,10 @@ export function buildCartLocal(
   }
   const byId = new Map(cachedProducts.map((p) => [String(p._id), p]))
 
+  // Keep each line's ex-tax base alongside it so the totals balance for both
+  // inclusive and exclusive pricing (mirrors server gst.engine.js).
+  const subtotalExTaxByLine: number[] = []
+
   const lines: CartLine[] = items.map((it) => {
     const product = byId.get(String(it.productId))
     if (!product) throw new Error('PRODUCT_NOT_FOUND_OFFLINE')
@@ -112,6 +124,7 @@ export function buildCartLocal(
       },
       ctx,
     )
+    subtotalExTaxByLine.push(computed.subtotalExTax)
     return {
       productId: String(product._id),
       productSnapshot: {
@@ -138,10 +151,15 @@ export function buildCartLocal(
     }
   })
 
-  const subtotal = round2(lines.reduce((s, l) => s + l.basePrice, 0))
-  const totalDiscount = round2(lines.reduce((s, l) => s + l.discountAmount, 0))
+  // Aggregate from ex-tax bases: grandTotal = subtotal - discount + tax
+  // == Σ line.totalAmount. Identical to old behaviour for exclusive lines;
+  // for inclusive lines the tax is extracted instead of stacked on top, so
+  // the customer pays exactly the listed selling price.
+  const subtotal = round2(subtotalExTaxByLine.reduce((s, v) => s + v, 0))
+  const taxableTotal = round2(lines.reduce((s, l) => s + l.taxableAmount, 0))
   const totalTax = round2(lines.reduce((s, l) => s + l.totalTax, 0))
-  const grandTotalRaw = round2(subtotal - totalDiscount + totalTax)
+  const totalDiscount = round2(subtotal - taxableTotal)
+  const grandTotalRaw = round2(taxableTotal + totalTax)
   const grandTotal = Math.round(grandTotalRaw)
   const roundOff = round2(grandTotal - grandTotalRaw)
 

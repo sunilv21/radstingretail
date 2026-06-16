@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { ok } from '../utils/response.js';
 import { PayrollService } from '../services/payroll.service.js';
 import Employee from '../models/Employee.js';
+import { requirePermission } from '../middleware/rbac.js';
 
 const router = Router();
 
@@ -41,7 +42,9 @@ router.put('/employees/:id', async (req, res, next) => {
 });
 
 // Preview a payslip for one employee — returns computed math without persisting.
-router.post('/preview/:employeeId/:period', async (req, res, next) => {
+// Payslip preview computes but persists nothing — tag payroll:read so the
+// POST→create default doesn't block manager/accountant from previewing.
+router.post('/preview/:employeeId/:period', requirePermission('payroll', 'read'), async (req, res, next) => {
   try {
     const employee = await Employee.findOne({ _id: req.params.employeeId, storeId: req.user.storeId }).lean();
     if (!employee) {

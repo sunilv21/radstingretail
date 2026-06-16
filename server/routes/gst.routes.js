@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { ok } from '../utils/response.js';
 import { GSTService } from '../services/gst.service.js';
+import { requirePermission } from '../middleware/rbac.js';
 
 const router = Router();
 
@@ -34,7 +35,10 @@ router.get('/gstr9/:fy', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/reconcile/2a/:period', async (req, res, next) => {
+// GSTR-2A reconcile is a read/compute action (matches uploaded data, persists
+// nothing) — tag it gst:read so the router-level POST→create default doesn't
+// wrongly block manager/CA whose job includes reconciliation.
+router.post('/reconcile/2a/:period', requirePermission('gst', 'read'), async (req, res, next) => {
   try {
     const result = await GSTService.reconcileGstr2a({
       storeId: req.user.storeId,

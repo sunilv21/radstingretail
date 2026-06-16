@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -59,6 +59,7 @@ interface PoItem {
   receivedQty: number;
   purchasePrice: number;
   gstRate: number;
+  priceIncludesGst?: boolean;
   unit: string;
   taxableAmount: number;
   totalTax: number;
@@ -147,6 +148,30 @@ interface NewLine {
   orderedQty: number;
   purchasePrice: number;
   gstRate: number;
+  // When true, the supplier-quoted purchasePrice already includes GST and
+  // the backend extracts the tax out of it instead of taxing on top.
+  // Seeded from the product master, but overridable per PO line.
+  priceIncludesGst: boolean;
+}
+
+// Draft handed over from the Scan Bill (OCR) page via sessionStorage.
+interface OcrDraftLine {
+  description: string;
+  hsnCode: string | null;
+  quantity: number | null;
+  rate: number | null;
+  amount: number | null;
+  gstRate: number | null;
+}
+interface OcrDraft {
+  supplierGstin?: string | null;
+  supplierName?: string | null;
+  invoiceNumber?: string | null;
+  invoiceDate?: string | null;
+  totalAmount?: number | null;
+  matchedSupplierId?: string | null;
+  lineItems?: OcrDraftLine[];
+  rawText?: string;
 }
 
 export default function PurchasesPage() {
@@ -162,6 +187,7 @@ export default function PurchasesPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
+  const [ocrDraft, setOcrDraft] = useState<OcrDraft | null>(null);
   const [grnPo, setGrnPo] = useState<PurchaseOrder | null>(null);
   const [payPo, setPayPo] = useState<PurchaseOrder | null>(null);
   const [viewPo, setViewPo] = useState<PurchaseOrder | null>(null);
@@ -199,8 +225,19 @@ export default function PurchasesPage() {
     const raw = sessionStorage.getItem('ocr-bill-draft');
     if (!raw) return;
     sessionStorage.removeItem('ocr-bill-draft');
+    try {
+      const draft = JSON.parse(raw) as OcrDraft;
+      setOcrDraft(draft);
+      const n = draft.lineItems?.length || 0;
+      toast.info(
+        n > 0
+          ? `OCR draft loaded — ${n} scanned line item${n === 1 ? '' : 's'}. Review, match to products, then submit.`
+          : 'OCR draft loaded — review and add line items before submitting.',
+      );
+    } catch {
+      toast.error('Could not read the scanned draft.');
+    }
     setCreateOpen(true);
-    toast.info('OCR draft loaded — review and add line items before submitting.');
   }, []);
 
   // Status / supplier / text filters applied in order: cheapest first.
@@ -599,9 +636,14 @@ export default function PurchasesPage() {
         <CreatePoDialog
           suppliers={suppliers}
           products={products}
-          onClose={() => setCreateOpen(false)}
+          ocrDraft={ocrDraft}
+          onClose={() => {
+            setCreateOpen(false);
+            setOcrDraft(null);
+          }}
           onCreated={() => {
             setCreateOpen(false);
+            setOcrDraft(null);
             load();
           }}
         />
@@ -1008,11 +1050,13 @@ function Stat({
 function CreatePoDialog({
   suppliers,
   products,
+  ocrDraft,
   onClose,
   onCreated,
 }: {
   suppliers: Supplier[];
   products: Product[];
+  ocrDraft?: OcrDraft | null;
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -1021,15 +1065,78 @@ function CreatePoDialog({
   // lists from the server on Create, which hydrates the saved state.
   const [localSuppliers, setLocalSuppliers] = useState<Supplier[]>(suppliers);
   const [localProducts, setLocalProducts] = useState<Product[]>(products);
-  const [supplierId, setSupplierId] = useState(suppliers[0]?._id || '');
+  // Preselect a supplier from the OCR match (by id, else by GSTIN) when present.
+  const ocrSupplierId =
+    ocrDraft?.matchedSupplierId ||
+    (ocrDraft?.supplierGstin
+      ? suppliers.find(
+          (s) => (s.gstNumber || '').toUpperCase() === String(ocrDraft.supplierGstin).toUpperCase(),
+        )?._id
+      : undefined);
+  const [supplierId, setSupplierId] = useState(ocrSupplierId || suppliers[0]?._id || '');
   const [addSupplierOpen, setAddSupplierOpen] = useState(false);
   const [addProductOpen, setAddProductOpen] = useState(false);
   const [lines, setLines] = useState<NewLine[]>([]);
+  // Scanned line items that couldn't be auto-matched to a catalogue product.
+  // Surfaced so the operator can create the product or pick a match.
+  const [unmatchedOcr, setUnmatchedOcr] = useState<OcrDraftLine[]>([]);
   const [productSearch, setProductSearch] = useState('');
-  const [notes, setNotes] = useState('');
+  const [notes, setNotes] = useState(
+    ocrDraft?.invoiceNumber ? `Supplier invoice ${ocrDraft.invoiceNumber}` : '',
+  );
   const [expectedDate, setExpectedDate] = useState('');
   const [reverseCharge, setReverseCharge] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  // On first mount with an OCR draft, match each scanned line to a catalogue
+  // product (by HSN + name, or fuzzy name) and seed the PO lines. Unmatched
+  // scanned items go into a review panel. Runs once.
+  const ocrSeeded = useRef(false);
+  useEffect(() => {
+    if (ocrSeeded.current) return;
+    if (!ocrDraft?.lineItems?.length) return;
+    ocrSeeded.current = true;
+
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+    const seeded: NewLine[] = [];
+    const unmatched: OcrDraftLine[] = [];
+
+    for (const li of ocrDraft.lineItems) {
+      const desc = norm(li.description || '');
+      if (!desc) continue;
+      const match = products.find((p) => {
+        if (li.hsnCode && p.hsnCode && String(p.hsnCode) === String(li.hsnCode)) {
+          // HSN match is a strong signal; confirm with a loose name overlap.
+          const pn = norm(p.name);
+          return pn.includes(desc) || desc.includes(pn) || pn.split(' ')[0] === desc.split(' ')[0];
+        }
+        const pn = norm(p.name);
+        return pn === desc || pn.includes(desc) || desc.includes(pn);
+      });
+      if (match && !seeded.some((l) => l.productId === match._id)) {
+        seeded.push({
+          productId: match._id,
+          productName: match.name,
+          unit: match.unit,
+          orderedQty: li.quantity && li.quantity > 0 ? li.quantity : 1,
+          purchasePrice: li.rate && li.rate > 0 ? li.rate : match.purchasePrice || 0,
+          gstRate: li.gstRate ?? match.gstRate,
+          priceIncludesGst: !!match.priceIncludesGst,
+        });
+      } else {
+        unmatched.push(li);
+      }
+    }
+    if (seeded.length) setLines(seeded);
+    setUnmatchedOcr(unmatched);
+    if (seeded.length || unmatched.length) {
+      toast.info(
+        `Matched ${seeded.length} of ${ocrDraft.lineItems.length} scanned items to your catalogue.` +
+          (unmatched.length ? ` ${unmatched.length} need a product.` : ''),
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const filteredProducts = localProducts.filter((p) =>
     productSearch
@@ -1053,6 +1160,7 @@ function CreatePoDialog({
         orderedQty: 1,
         purchasePrice: p.purchasePrice || 0,
         gstRate: p.gstRate,
+        priceIncludesGst: !!p.priceIncludesGst,
       },
     ]);
     setProductSearch('');
@@ -1064,11 +1172,21 @@ function CreatePoDialog({
 
   const removeLine = (pid: string) => setLines((prev) => prev.filter((l) => l.productId !== pid));
 
-  const subtotal = lines.reduce((s, l) => s + l.orderedQty * l.purchasePrice, 0);
-  const tax = lines.reduce(
-    (s, l) => s + l.orderedQty * l.purchasePrice * (l.gstRate / 100),
-    0,
-  );
+  // Per-line tax math mirrors the server's GST engine so the dialog preview
+  // matches the saved PO. For inclusive lines the quoted purchasePrice
+  // already contains tax; we extract it instead of stacking it on top.
+  const lineMath = (l: NewLine) => {
+    const gross = l.orderedQty * l.purchasePrice;
+    if (l.priceIncludesGst && l.gstRate > 0) {
+      const taxable = gross / (1 + l.gstRate / 100);
+      return { taxable, tax: gross - taxable, total: gross };
+    }
+    const tax = gross * (l.gstRate / 100);
+    return { taxable: gross, tax, total: gross + tax };
+  };
+  const subtotal = lines.reduce((s, l) => s + lineMath(l).taxable, 0);
+  const tax = lines.reduce((s, l) => s + lineMath(l).tax, 0);
+  const grand = lines.reduce((s, l) => s + lineMath(l).total, 0);
 
   const save = async (status: 'draft' | 'ordered') => {
     if (!supplierId) {
@@ -1090,6 +1208,7 @@ function CreatePoDialog({
           purchasePrice: l.purchasePrice,
           gstRate: l.gstRate,
           unit: l.unit,
+          priceIncludesGst: l.priceIncludesGst,
         })),
         notes,
         expectedDate: expectedDate || null,
@@ -1287,6 +1406,71 @@ function CreatePoDialog({
           )}
         </div>
 
+        {unmatchedOcr.length > 0 && (
+          <div className="border border-amber-300 bg-amber-50 dark:bg-amber-950/20 rounded p-3 space-y-2">
+            <div className="text-sm font-medium text-amber-800 dark:text-amber-300">
+              {unmatchedOcr.length} scanned item{unmatchedOcr.length === 1 ? '' : 's'} couldn&apos;t be matched to a product
+            </div>
+            <p className="text-xs text-amber-700 dark:text-amber-400">
+              Search and add them above if they already exist, or create them as new products. Then dismiss each here.
+            </p>
+            <div className="space-y-1">
+              {unmatchedOcr.map((li, idx) => (
+                <div
+                  key={idx}
+                  className="flex items-center justify-between gap-2 text-xs bg-background/60 rounded px-2 py-1"
+                >
+                  <div className="min-w-0">
+                    <span className="font-medium">{li.description}</span>
+                    <span className="text-muted-foreground">
+                      {li.hsnCode ? ` · HSN ${li.hsnCode}` : ''}
+                      {li.quantity ? ` · qty ${li.quantity}` : ''}
+                      {li.rate ? ` · ₹${li.rate}` : ''}
+                      {li.gstRate ? ` · ${li.gstRate}% GST` : ''}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-6 px-2 text-[11px]"
+                      onClick={() => {
+                        setProductSearch(li.description);
+                        setUnmatchedOcr((prev) => prev.filter((_, i) => i !== idx));
+                      }}
+                      title="Search the catalogue for this item"
+                    >
+                      Find
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-6 px-2 text-[11px] bg-blue-600 hover:bg-blue-700"
+                      onClick={() => {
+                        setProductSearch(li.description);
+                        setAddProductOpen(true);
+                        setUnmatchedOcr((prev) => prev.filter((_, i) => i !== idx));
+                      }}
+                      title="Create a new product master for this item"
+                    >
+                      Create
+                    </Button>
+                    <button
+                      type="button"
+                      onClick={() => setUnmatchedOcr((prev) => prev.filter((_, i) => i !== idx))}
+                      className="text-muted-foreground hover:text-foreground px-1"
+                      title="Dismiss"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {addProductOpen && (
           <NewProductDialog
             initialName={productSearch}
@@ -1308,14 +1492,19 @@ function CreatePoDialog({
                   <TableHead className="text-right">Qty</TableHead>
                   <TableHead className="text-right">Purchase price</TableHead>
                   <TableHead className="text-right">GST %</TableHead>
+                  <TableHead
+                    className="text-center"
+                    title="Tick when the supplier-quoted purchase price already includes GST. The tax will be extracted out of the price instead of added on top."
+                  >
+                    Incl. GST
+                  </TableHead>
                   <TableHead className="text-right">Line total</TableHead>
                   <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {lines.map((l) => {
-                  const base = l.orderedQty * l.purchasePrice;
-                  const t = base * (l.gstRate / 100);
+                  const m = lineMath(l);
                   return (
                     <TableRow key={l.productId}>
                       <TableCell>{l.productName}</TableCell>
@@ -1355,7 +1544,18 @@ function CreatePoDialog({
                           ))}
                         </select>
                       </TableCell>
-                      <TableCell className="text-right">{money(base + t)}</TableCell>
+                      <TableCell className="text-center">
+                        <input
+                          type="checkbox"
+                          checked={l.priceIncludesGst}
+                          onChange={(e) =>
+                            updateLine(l.productId, { priceIncludesGst: e.target.checked })
+                          }
+                          title="Quoted price already includes GST — extract tax instead of adding it."
+                          className="cursor-pointer"
+                        />
+                      </TableCell>
+                      <TableCell className="text-right">{money(m.total)}</TableCell>
                       <TableCell>
                         <Button size="icon" variant="ghost" onClick={() => removeLine(l.productId)}>
                           <Trash2 className="w-4 h-4 text-red-500" />
@@ -1375,9 +1575,9 @@ function CreatePoDialog({
             <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
           <div className="text-sm space-y-1 bg-muted p-3 rounded">
-            <Row label="Subtotal" value={money(subtotal)} />
+            <Row label="Subtotal (taxable)" value={money(subtotal)} />
             <Row label="Tax" value={money(tax)} />
-            <Row label="Total" value={money(subtotal + tax)} strong />
+            <Row label="Total" value={money(grand)} strong />
           </div>
         </div>
 

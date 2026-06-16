@@ -51,7 +51,18 @@
       "Bash(awk 'NR>=1097 && NR<=1700 && /^}$/{print NR; exit}' app/dashboard/settings/page.tsx)",
       "Bash(awk '/^function ProviderTile/{found=1} found{print NR\": \"$0; if\\(/^}$/ && found && NR > start+3\\){exit}; if\\(found && !start\\){start=NR}}' app/dashboard/settings/page.tsx)",
       "Bash(grep -n \"export function ok\\\\|export const ok\" server/utils/response.js | head -3; echo \"...\"; sed -n '/export function ok\\\\|export const ok/,/^}/p' server/utils/response.js | head -10)",
-      "Bash(node --check server/routes/supplier.routes.js)"
+      "Bash(node --check server/routes/supplier.routes.js)",
+      "Bash(echo \"Exit code: $?\")",
+      "Bash(node -e \"const p=require\\('./node_modules/next/package.json'\\); console.log\\('Next:',p.version\\); console.log\\('Bin keys:', Object.keys\\(p.bin||{}\\)\\);\")",
+      "Bash(node node_modules/next/dist/bin/next --help)",
+      "Bash(node node_modules/next/dist/bin/next dev --help)",
+      "Bash(node --input-type=module -e \"import\\('./server/engines/ledger.engine.js'\\).then\\(m => console.log\\('verifyBalance is:', typeof m.LedgerEngine.verifyBalance\\)\\).catch\\(e => { console.error\\('IMPORT FAILED:', e.message\\); process.exit\\(1\\); }\\)\")",
+      "WebFetch(domain:einvoice1.gst.gov.in)",
+      "WebFetch(domain:www.gstn.gov.in)",
+      "WebFetch(domain:ewaybillgst.gov.in)",
+      "WebSearch",
+      "WebFetch(domain:www.gstn.org.in)",
+      "WebFetch(domain:documenter.getpostman.com)"
     ],
     "additionalDirectories": [
       "C:\\Users\\sunil\\Desktop\\Radsting Devs\\POS system\\server\\utils"

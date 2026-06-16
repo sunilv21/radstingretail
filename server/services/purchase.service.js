@@ -57,17 +57,17 @@ function computeLineTotals(items, { storeStateCode, supplierStateCode }) {
   return items.map((it) => {
     const base = Number(it.orderedQty) * Number(it.purchasePrice);
     const discount = Number(it.discount || 0);
-    const discountAmount =
-      it.discountType === 'percent' ? base * (discount / 100) : discount;
-    const taxable = Math.max(0, base - discountAmount);
+    const discountType = it.discountType || 'flat';
+    const inclusive = !!it.priceIncludesGst;
     const tax = GSTEngine.computeItemTax(
       {
         basePrice: base,
         quantity: Number(it.orderedQty),
         sellingPrice: Number(it.purchasePrice),
         discount,
-        discountType: it.discountType || 'flat',
+        discountType,
         gstRate: Number(it.gstRate || 0),
+        priceIncludesGst: inclusive,
       },
       { storeStateCode, customerStateCode: supplierStateCode },
     );
@@ -78,9 +78,10 @@ function computeLineTotals(items, { storeStateCode, supplierStateCode }) {
       receivedQty: 0,
       purchasePrice: Number(it.purchasePrice),
       gstRate: Number(it.gstRate || 0),
-      basePrice: base,
-      discountAmount: Number(discountAmount.toFixed(2)),
-      taxableAmount: Number(taxable.toFixed(2)),
+      priceIncludesGst: inclusive,
+      basePrice: tax.basePrice,
+      discountAmount: tax.discountAmount,
+      taxableAmount: tax.taxableAmount,
       cgst: tax.cgst,
       sgst: tax.sgst,
       igst: tax.igst,
@@ -92,16 +93,23 @@ function computeLineTotals(items, { storeStateCode, supplierStateCode }) {
   });
 }
 
+// Aggregate from the per-line engine output. Sums must be done against the
+// post-extraction values (taxableAmount, totalTax, totalAmount) so the
+// invariant grandTotal = sum(totalAmount) holds whether lines are
+// GST-inclusive or GST-exclusive — mixing both on the same PO is allowed.
 function aggregate(items) {
-  const subtotal = items.reduce((s, i) => s + i.basePrice, 0);
-  const totalDiscount = items.reduce((s, i) => s + (i.discountAmount || 0), 0);
-  const totalTax = items.reduce((s, i) => s + i.totalTax, 0);
-  const grandTotal = Number((subtotal - totalDiscount + totalTax).toFixed(2));
+  const subtotal = items.reduce(
+    (s, i) => s + Number(i.taxableAmount || 0) + Number(i.discountAmount || 0),
+    0,
+  );
+  const totalDiscount = items.reduce((s, i) => s + Number(i.discountAmount || 0), 0);
+  const totalTax = items.reduce((s, i) => s + Number(i.totalTax || 0), 0);
+  const grandTotal = items.reduce((s, i) => s + Number(i.totalAmount || 0), 0);
   return {
     subtotal: Number(subtotal.toFixed(2)),
     totalDiscount: Number(totalDiscount.toFixed(2)),
     totalTax: Number(totalTax.toFixed(2)),
-    grandTotal,
+    grandTotal: Number(grandTotal.toFixed(2)),
   };
 }
 
@@ -122,6 +130,13 @@ async function resolveItems(input, storeId, session) {
       productSnapshot: { name: product.name, sku: product.sku, hsnCode: product.hsnCode },
       gstRate: it.gstRate ?? product.gstRate,
       purchasePrice: it.purchasePrice ?? product.purchasePrice,
+      // Per-line override > product flag. We don't fall back to the store
+      // default here because purchase-side pricing is supplier-quoted and
+      // should be explicit per PO line.
+      priceIncludesGst:
+        it.priceIncludesGst !== undefined
+          ? !!it.priceIncludesGst
+          : !!product.priceIncludesGst,
     };
   });
 }
@@ -289,6 +304,10 @@ export const PurchaseService = {
             quantity: qty,
             purchasePrice: poItem.purchasePrice,
             gstRate: poItem.gstRate,
+            // Carry the GST mode forward so GRN totals/ledger postings
+            // extract tax instead of stacking it on top of an inclusive
+            // supplier-quoted price.
+            priceIncludesGst: !!poItem.priceIncludesGst,
             batchNumber: line.batchNumber || poItem.batchNumber || '',
             expiryDate: line.expiryDate || poItem.expiryDate || null,
           });
@@ -373,12 +392,28 @@ export const PurchaseService = {
           }
         }
 
-        const grnSubtotal = grnItems.reduce((s, i) => s + i.quantity * i.purchasePrice, 0);
-        const grnTax = grnItems.reduce((s, i) => {
-          const taxable = i.quantity * i.purchasePrice;
-          return s + taxable * (i.gstRate / 100);
-        }, 0);
-        const grnTotal = Number((grnSubtotal + grnTax).toFixed(2));
+        // Sum taxable / tax / total per-line so inclusive lines get their
+        // tax extracted (rather than re-applied on top of an already-
+        // taxed quote). Mirrors GSTEngine.computeItemTax invariants.
+        let grnSubtotal = 0;
+        let grnTax = 0;
+        let grnTotal = 0;
+        for (const i of grnItems) {
+          const gross = i.quantity * i.purchasePrice;
+          const rate = Number(i.gstRate || 0);
+          if (i.priceIncludesGst && rate > 0) {
+            const taxable = gross / (1 + rate / 100);
+            grnSubtotal += taxable;
+            grnTax += gross - taxable;
+            grnTotal += gross;
+          } else {
+            const taxOnTop = gross * (rate / 100);
+            grnSubtotal += gross;
+            grnTax += taxOnTop;
+            grnTotal += gross + taxOnTop;
+          }
+        }
+        grnTotal = Number(grnTotal.toFixed(2));
 
         await LedgerEngine.recordPurchaseReceipt(
           {
