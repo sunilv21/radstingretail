@@ -95,7 +95,8 @@
       "Bash(mkdir -p .ocrtest)",
       "Bash(node .ocrtest/run.mjs)",
       "Bash(node --input-type=module -e \"import\\('./server/app.js'\\).then\\(m => console.log\\('app loaded:', typeof m.app, '| prepareApp:', typeof m.prepareApp\\)\\).catch\\(e => { console.error\\('LOAD FAIL:', e.message\\); process.exit\\(1\\); }\\)\")",
-      "Bash(echo \"lint: $?\")"
+      "Bash(echo \"lint: $?\")",
+      "Bash(node scripts/build-docs-html.mjs)"
     ],
     "additionalDirectories": [
       "c:\\Users\\sunil\\Desktop\\Radsting Devs\\POS system-admin",

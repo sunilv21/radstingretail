@@ -6,8 +6,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useRouter } from 'next/navigation'
-import { Lock, Eye, EyeOff } from 'lucide-react'
+import { Lock, Eye, EyeOff, WifiOff } from 'lucide-react'
 import { API_BASE } from '@/lib/api'
+import { storeOfflineCredential, tryOfflineLogin, hasOfflineCredential, clearOfflineSessionFlag } from '@/lib/offline-auth'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -16,6 +17,8 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
+  const [offlineNotice, setOfflineNotice] = useState('')
+  const [canOffline, setCanOffline] = useState(false)
 
   // Clear any poisoned localStorage ("undefined"/invalid JSON from older builds)
   useEffect(() => {
@@ -36,10 +39,77 @@ export default function LoginPage() {
     }
   }, [])
 
+  // Show the "offline sign-in available" hint when the network is down (or the
+  // browser reports offline) AND this device has a cached credential for the
+  // typed email.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const compute = () => {
+      const offline = typeof navigator !== 'undefined' && navigator.onLine === false
+      setCanOffline(offline && !!email && hasOfflineCredential(email))
+    }
+    compute()
+    window.addEventListener('online', compute)
+    window.addEventListener('offline', compute)
+    return () => {
+      window.removeEventListener('online', compute)
+      window.removeEventListener('offline', compute)
+    }
+  }, [email])
+
+  // Common post-login routing, shared by the online and offline paths.
+  // `token` is omitted for an offline session (tryOfflineLogin restores the
+  // user + offline flag and intentionally stores NO server token).
+  const finishLogin = (user: { userType?: string; role?: string }, token?: string): boolean => {
+    const isPlatformAdmin = String(user?.userType || user?.role || '').toLowerCase() === 'super_admin'
+    if (isPlatformAdmin) {
+      setError('This is the tenant app. Platform admins should use the vendor portal.')
+      return false
+    }
+    if (token) {
+      localStorage.setItem('token', token)
+      localStorage.setItem('user', JSON.stringify(user))
+      clearOfflineSessionFlag() // a real online session supersedes any offline one
+    }
+    const isCa = String(user?.role || '').toLowerCase() === 'ca'
+    router.push(isCa ? '/ca-portal' : '/dashboard')
+    return true
+  }
+
+  // Fallback when the network is unreachable: validate against the locally
+  // cached PBKDF2 verifier (device-bound, AES-GCM encrypted) and restore a
+  // tokenless offline session.
+  const attemptOfflineLogin = async (): Promise<boolean> => {
+    try {
+      const { user } = await tryOfflineLogin(email, password)
+      const ok = finishLogin(user as { userType?: string; role?: string })
+      if (ok) setOfflineNotice('Signed in offline — changes will sync when you reconnect.')
+      return ok
+    } catch (offErr) {
+      const code = (offErr as { code?: string })?.code
+      if (code === 'NO_OFFLINE_SESSION') {
+        setError('You appear to be offline and have never signed in on this device. Connect to the internet to sign in the first time.')
+      } else if (code === 'INVALID_CREDENTIALS') {
+        setError('Invalid email or password.')
+      } else {
+        setError(offErr instanceof Error ? offErr.message : 'Offline sign-in failed')
+      }
+      return false
+    }
+  }
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
     setError('')
+    setOfflineNotice('')
+
+    // If the browser already knows it's offline, go straight to the offline path.
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      await attemptOfflineLogin()
+      setIsLoading(false)
+      return
+    }
 
     try {
       const response = await fetch(`${API_BASE}/auth/login`, {
@@ -63,24 +133,26 @@ export default function LoginPage() {
         throw new Error('Login response was malformed')
       }
 
-      // Tenant POS app — only tenant_admin and staff log in here. Platform
-      // admins (super_admin) go to the vendor portal, which lives on a
-      // different domain (e.g. vendor.radsting.com) and uses
-      // /api/auth/super-admin/login.
-      const isPlatformAdmin = String(user?.userType || user?.role || '').toLowerCase() === 'super_admin'
-      if (isPlatformAdmin) {
-        setError('This is the tenant app. Platform admins should use the vendor portal.')
-        return
-      }
-      localStorage.setItem('token', token)
-      localStorage.setItem('user', JSON.stringify(user))
-      // CAs live in their own read-only portal. Everyone else goes to the
-      // main dashboard. Sending a CA to /dashboard would just bounce them
-      // back since they don't have write permissions for most modules.
-      const isCa = String(user?.role || '').toLowerCase() === 'ca'
-      router.push(isCa ? '/ca-portal' : '/dashboard')
+      // Cache an offline credential so this user can sign in during a future
+      // outage on this device. No JWT is cached — only a device-bound verifier.
+      // Best-effort; never blocks the online login.
+      try {
+        await storeOfflineCredential({ email, password, user })
+      } catch {}
+
+      finishLogin(user, token)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed')
+      // A network/abort error (server unreachable) — not a 4xx — means we're
+      // effectively offline. Fall back to the cached-credential path.
+      const isNetworkError =
+        err instanceof TypeError ||
+        (err instanceof Error && /failed to fetch|networkerror|load failed/i.test(err.message))
+      if (isNetworkError) {
+        const ok = await attemptOfflineLogin()
+        if (!ok && !error) setError('Cannot reach the server. Connect to the internet, or use an account already signed in on this device.')
+      } else {
+        setError(err instanceof Error ? err.message : 'Login failed')
+      }
     } finally {
       setIsLoading(false)
     }
@@ -148,6 +220,18 @@ export default function LoginPage() {
             {error && (
               <div className="bg-red-500/10 border border-red-500/50 text-red-600 px-4 py-2 rounded text-sm">
                 {error}
+              </div>
+            )}
+            {offlineNotice && (
+              <div className="bg-amber-500/10 border border-amber-500/50 text-amber-500 px-4 py-2 rounded text-sm flex items-center gap-2">
+                <WifiOff className="w-4 h-4 shrink-0" />
+                {offlineNotice}
+              </div>
+            )}
+            {canOffline && !offlineNotice && (
+              <div className="bg-amber-500/10 border border-amber-500/40 text-amber-500/90 px-4 py-2 rounded text-xs flex items-center gap-2">
+                <WifiOff className="w-3.5 h-3.5 shrink-0" />
+                You&apos;re offline — sign in with the password for an account already used on this device.
               </div>
             )}
             <div className="space-y-2">

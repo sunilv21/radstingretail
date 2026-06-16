@@ -156,6 +156,16 @@ const saleSchema = new mongoose.Schema(
     // collide on the second insert. The field must be ABSENT when there's no
     // key, hence no default and the partial filter on string type.
     idempotencyKey: { type: String },
+    // Provenance for sales rung up OFFLINE and synced later: which device,
+    // which offline session, and the wall-clock time the cashier actually
+    // made the sale (vs. createdAt, which is when the server committed it on
+    // sync). Strengthens the audit trail + outbox ownership. Absent for online sales.
+    offlineMeta: {
+      createdOfflineAt: Date,
+      deviceId: String,
+      offlineSessionId: String,
+      userRef: String,
+    },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true },

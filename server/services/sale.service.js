@@ -327,6 +327,20 @@ export const SaleService = {
               // would make the partial unique index collide across keyless
               // sales — leave the field ABSENT instead. (See Sale.js index.)
               ...(input?.idempotencyKey ? { idempotencyKey: String(input.idempotencyKey) } : {}),
+              // Offline provenance (present only for sales created during an
+              // outage and synced later) — see Sale.offlineMeta.
+              ...(input?.offlineMeta && typeof input.offlineMeta === 'object'
+                ? {
+                    offlineMeta: {
+                      createdOfflineAt: input.offlineMeta.createdOfflineAt
+                        ? new Date(input.offlineMeta.createdOfflineAt)
+                        : undefined,
+                      deviceId: input.offlineMeta.deviceId || undefined,
+                      offlineSessionId: input.offlineMeta.offlineSessionId || undefined,
+                      userRef: input.offlineMeta.userRef || undefined,
+                    },
+                  }
+                : {}),
               createdBy: userId,
               createdAt: saleCreatedAt,
             },

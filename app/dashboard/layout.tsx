@@ -14,6 +14,7 @@ import SubscriptionExpiredScreen from '@/components/SubscriptionExpiredScreen'
 import { Toaster } from 'sonner'
 import { bootSync } from '@/lib/sync'
 import { api, ApiError } from '@/lib/api'
+import { isOfflineSession, clearOfflineSessionFlag } from '@/lib/offline-auth'
 
 interface MeResponse {
   user: {
@@ -92,7 +93,11 @@ export default function DashboardLayout({
     bootSync()
     const storedUser = localStorage.getItem('user')
     const token = localStorage.getItem('token')
-    if (!storedUser || storedUser === 'undefined' || storedUser === 'null' || !token) {
+    // A tokenless session is valid ONLY when it's an offline session restored
+    // from a device-bound cached credential (see lib/offline-auth.ts). Online,
+    // a missing token still bounces to login.
+    const offline = isOfflineSession()
+    if (!storedUser || storedUser === 'undefined' || storedUser === 'null' || (!token && !offline)) {
       localStorage.removeItem('user')
       localStorage.removeItem('token')
       router.push('/')
@@ -180,6 +185,9 @@ export default function DashboardLayout({
     localStorage.removeItem('token')
     localStorage.removeItem('user')
     sessionStorage.removeItem('subscription-block')
+    // End the offline session, but KEEP the device-bound cached credential so
+    // the user can still sign in offline next time without reaching the server.
+    clearOfflineSessionFlag()
     router.push('/')
   }
 

@@ -11,11 +11,13 @@
 import 'dotenv/config';
 import { app, prepareApp } from './app.js';
 import { disconnectDB } from './config/database.js';
+import { assertEnv } from './config/env.js';
 
 const PORT = process.env.PORT || 5000;
 
 (async () => {
   try {
+    assertEnv(); // fail-closed in production on missing/weak critical env
     await prepareApp();
     const server = app.listen(PORT, () => {
       console.log(`[api] POS + ERP server listening on :${PORT}`);

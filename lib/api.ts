@@ -30,6 +30,42 @@ export class ApiError extends Error {
 interface RequestOpts extends RequestInit {
   /** Override the default timeout in ms. 0 disables the timeout entirely. */
   timeout?: number;
+  /**
+   * GET response caching (ignored for writes).
+   *  - omitted  → cache for DEFAULT_GET_TTL_MS if the path is cacheable
+   *  - number   → cache this GET for that many ms
+   *  - false    → always hit the network (no cache, no stale read)
+   */
+  cacheTtl?: number | false;
+}
+
+// -------- Client-side GET cache + in-flight de-duplication ----------------
+// Why: every page does `useEffect(load, [])`, so navigating away and back used
+// to re-fetch the same data every time. We cache GET responses for a short TTL
+// and de-dupe concurrent identical requests, so returning to a page within the
+// window is instant. Writes (POST/PUT/DELETE) invalidate the matching resource
+// so lists still refresh after a create/update/delete.
+const DEFAULT_GET_TTL_MS = 60_000;
+
+// Paths that must always be fresh (auth/session state, realtime POS lookups,
+// live dashboards, health probes, public payment callbacks).
+const NO_CACHE = [
+  /^\/auth\b/, /^\/ready\b/, /^\/health\b/, /^\/reports\b/,
+  /^\/pos\b/, /^\/public\b/, /^\/billing\b/,
+  /\/einvoice\/(test|generate|cancel)\b/, /\/whatsapp\/(test|verify)\b/,
+];
+function isCacheable(path: string): boolean {
+  return !NO_CACHE.some((re) => re.test(path));
+}
+
+interface CacheEntry { at: number; ttl: number; value: unknown }
+const getCache = new Map<string, CacheEntry>();
+const inFlight = new Map<string, Promise<unknown>>();
+
+/** Drop cached GETs. Pass a path prefix to clear a subset, or no arg for all. */
+export function invalidateCache(prefix?: string): void {
+  if (!prefix) { getCache.clear(); return; }
+  for (const k of getCache.keys()) if (k.startsWith(prefix)) getCache.delete(k);
 }
 
 async function request<T>(path: string, options: RequestOpts = {}): Promise<T> {
@@ -106,6 +142,7 @@ async function request<T>(path: string, options: RequestOpts = {}): Promise<T> {
     if (res.status === 401 && typeof window !== 'undefined') {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
+      getCache.clear(); // never serve the previous session's data
       if (window.location.pathname !== '/') window.location.href = '/';
     }
     // 402 = subscription expired or blocked. Stash the code in
@@ -143,14 +180,63 @@ async function request<T>(path: string, options: RequestOpts = {}): Promise<T> {
   return body as T;
 }
 
+function cachedGet<T>(path: string, opts?: RequestOpts): Promise<T> {
+  const ttl =
+    opts?.cacheTtl === false
+      ? 0
+      : typeof opts?.cacheTtl === 'number'
+        ? opts.cacheTtl
+        : isCacheable(path)
+          ? DEFAULT_GET_TTL_MS
+          : 0;
+
+  if (ttl <= 0) return request<T>(path, opts);
+
+  const hit = getCache.get(path);
+  if (hit && Date.now() - hit.at < hit.ttl) {
+    return Promise.resolve(hit.value as T);
+  }
+  // De-dupe concurrent identical GETs (also covers React strict-mode double-mount).
+  const flying = inFlight.get(path);
+  if (flying) return flying as Promise<T>;
+
+  const p = request<T>(path, opts)
+    .then((v) => {
+      getCache.set(path, { at: Date.now(), ttl, value: v });
+      inFlight.delete(path);
+      return v;
+    })
+    .catch((err) => {
+      inFlight.delete(path);
+      throw err;
+    });
+  inFlight.set(path, p);
+  return p;
+}
+
 export const api = {
-  get: <T>(path: string, opts?: RequestOpts) => request<T>(path, opts),
+  get: <T>(path: string, opts?: RequestOpts) => cachedGet<T>(path, opts),
+  // Writes ripple across resources (a sale changes stock + ledger + reports;
+  // a GRN changes stock + payables). Clearing the whole GET cache after any
+  // mutation is the simplest correct choice — navigation between reads stays
+  // cached/instant, but the moment anything changes, every screen refetches.
   post: <T>(path: string, data?: unknown, opts?: RequestOpts) =>
-    request<T>(path, { ...opts, method: 'POST', body: JSON.stringify(data ?? {}) }),
+    request<T>(path, { ...opts, method: 'POST', body: JSON.stringify(data ?? {}) }).then((r) => {
+      invalidateCache();
+      return r as T;
+    }),
   put: <T>(path: string, data?: unknown, opts?: RequestOpts) =>
-    request<T>(path, { ...opts, method: 'PUT', body: JSON.stringify(data ?? {}) }),
+    request<T>(path, { ...opts, method: 'PUT', body: JSON.stringify(data ?? {}) }).then((r) => {
+      invalidateCache();
+      return r as T;
+    }),
   del: <T>(path: string, opts?: RequestOpts) =>
-    request<T>(path, { ...opts, method: 'DELETE' }),
+    request<T>(path, { ...opts, method: 'DELETE' }).then((r) => {
+      invalidateCache();
+      return r as T;
+    }),
+  /** Manually drop cached GETs (e.g. force-refresh a screen). */
+  invalidate: invalidateCache,
 };
 
 // Legacy helpers kept for existing pages

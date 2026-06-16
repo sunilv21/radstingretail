@@ -17,6 +17,7 @@ import cors from 'cors';
 import mongoose from 'mongoose';
 
 import { connectDB } from './config/database.js';
+import { assertEnv } from './config/env.js';
 import { bootstrapIfEmpty } from './scripts/bootstrap.js';
 import { authenticate } from './middleware/auth.js';
 import { auditMiddleware } from './middleware/audit.js';
@@ -305,6 +306,7 @@ let preparing = null;
 export function prepareApp() {
   if (preparing) return preparing;
   preparing = (async () => {
+    assertEnv(); // fail-closed in production on missing/weak critical env
     await connectDB();
     if (process.env.NODE_ENV !== 'production') {
       await bootstrapIfEmpty();

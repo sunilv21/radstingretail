@@ -36,6 +36,7 @@ import {
   uuid,
 } from '@/lib/offline-db';
 import { buildCartLocal } from '@/lib/billing-local';
+import { getOfflineContext } from '@/lib/offline-auth';
 import { syncNow, refreshPendingCount } from '@/lib/sync';
 import { InvoicePreview } from '@/components/pos/InvoicePreview';
 import { ShieldCheck, UserRound, FileText, MessageCircle, Mail, Link as LinkIcon, QrCode } from 'lucide-react';
@@ -770,11 +771,23 @@ export default function POSPage() {
 
       // Offline path (or online with network error): write to outbox and let
       // the sync engine replay it whenever connectivity returns.
+      // Stamp offline provenance so the synced sale records who/where/when it
+      // was created during the outage (audit trail + outbox ownership).
+      const offlineCtx = getOfflineContext();
+      const offlinePayload = {
+        ...payload,
+        offlineMeta: {
+          createdOfflineAt: new Date().toISOString(),
+          deviceId: offlineCtx?.deviceId,
+          offlineSessionId: offlineCtx?.offlineSessionId,
+          userRef: offlineCtx?.userRef,
+        },
+      };
       const provisional = `OFFLINE-${Date.now().toString(36).toUpperCase()}`;
       await outboxAdd({
         id: idempotencyKey,
         kind: 'sales:create',
-        payload,
+        payload: offlinePayload,
         display: {
           invoiceLabel: provisional,
           grandTotal,

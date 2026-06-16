@@ -92,6 +92,35 @@ function normaliseRole(role: string | undefined | null): Role | null {
   return null
 }
 
+/**
+ * Offline sessions (restored from a cached credential, no server token) are
+ * restricted to billing-safe actions regardless of the user's online role.
+ * Finance / settings / users / payroll / reports are blocked offline — the
+ * server isn't there to authorise them and they shouldn't be done blind. The
+ * effective offline permission is the INTERSECTION of the role's grants and
+ * this allowlist.
+ */
+const OFFLINE_ALLOW: Record<string, string[]> = {
+  sales:     ['read', 'create'],
+  products:  ['read'],
+  inventory: ['read'],
+  customers: ['read', 'create'],
+  suppliers: ['read'],
+}
+
+function isOfflineSessionFlag(): boolean {
+  if (typeof window === 'undefined') return false
+  try { return window.localStorage.getItem('session-offline') === '1' } catch { return false }
+}
+
+function roleAllows(grants: Record<string, string[]>, resource: string, action: string): boolean {
+  for (const allowed of [grants['*'], grants[resource]].filter(Boolean) as string[][]) {
+    if (allowed.includes('*')) return true
+    if (allowed.includes(action)) return true
+  }
+  return false
+}
+
 export function can(
   user: AuthUser | null | undefined,
   resource: string,
@@ -101,11 +130,12 @@ export function can(
   if (!r) return false
   const grants = MATRIX[r]
   if (!grants) return false
-  for (const allowed of [grants['*'], grants[resource]].filter(Boolean) as string[][]) {
-    if (allowed.includes('*')) return true
-    if (allowed.includes(action)) return true
+  if (!roleAllows(grants, resource, action)) return false
+  // Offline: further restrict to the billing-safe allowlist.
+  if (isOfflineSessionFlag()) {
+    return (OFFLINE_ALLOW[resource] || []).includes(action)
   }
-  return false
+  return true
 }
 
 export function isReadOnly(user: AuthUser | null | undefined): boolean {
