@@ -1,21 +1,30 @@
-// Minimal flat ESLint config for Next.js 16.
+// Flat ESLint config for Next.js 16.
 //
-// Next.js 16 removed `next lint`. The recommended setup is
-// `eslint-config-next` + `@eslint/eslintrc` (FlatCompat) — install those
-// to get the full Next.js rules:
+// Next.js 16 removed `next lint`. Lint via `npm run lint` (eslint .) instead.
+// TypeScript files are parsed by `typescript-eslint`; rules stay minimal so
+// the gate catches genuinely broken code without forcing a stylistic
+// rewrite of the existing codebase. `npx tsc --noEmit` is still the
+// authoritative type check — ESLint here only catches syntactic / logic
+// mistakes the type-checker doesn't (unreachable code, duplicate keys,
+// self-comparisons, etc.).
 //
+// To layer in Next.js-specific rules (no-img-element, no-html-link-for-pages):
 //   npm i -D eslint-config-next @eslint/eslintrc
-//
-// then uncomment the FlatCompat block below. This minimal config only uses
-// ESLint core rules so it works without extra deps — catches genuinely
-// broken JS (undeclared vars, unreachable code, etc.) but no
-// Next.js-specific checks like `no-img-element` or `no-html-link-for-pages`.
+// then wire in FlatCompat — see the eslint-config-next docs.
 
-// import { FlatCompat } from '@eslint/eslintrc';
-// import path from 'node:path';
-// import { fileURLToPath } from 'node:url';
-// const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// const compat = new FlatCompat({ baseDirectory: __dirname });
+import tseslint from 'typescript-eslint';
+import nextPlugin from '@next/eslint-plugin-next';
+import reactHooks from 'eslint-plugin-react-hooks';
+
+// Plugins are registered (not enforced) so the existing
+// `// eslint-disable-next-line @next/next/...` and `react-hooks/...`
+// comments scattered through the codebase resolve cleanly. To start
+// enforcing any of these rules, move them into the `rules:` block below.
+const registeredPlugins = {
+  '@next/next': nextPlugin,
+  'react-hooks': reactHooks,
+  '@typescript-eslint': tseslint.plugin,
+};
 
 export default [
   {
@@ -29,9 +38,20 @@ export default [
       'next-env.d.ts',
     ],
   },
-  // ...compat.extends('next/core-web-vitals'),    // ← uncomment after install
+  {
+    files: ['**/*.{ts,tsx}'],
+    languageOptions: {
+      parser: tseslint.parser,
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      parserOptions: {
+        ecmaFeatures: { jsx: true },
+      },
+    },
+  },
   {
     files: ['**/*.{ts,tsx,js,jsx}'],
+    plugins: registeredPlugins,
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',

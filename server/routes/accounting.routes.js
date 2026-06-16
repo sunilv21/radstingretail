@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { ok } from '../utils/response.js';
 import { AccountingService } from '../services/accounting.service.js';
+import { requirePermission } from '../middleware/rbac.js';
 
 const router = Router();
 
@@ -126,7 +127,9 @@ router.post('/party-settlements', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/bank-reconciliation', async (req, res, next) => {
+// Bank reconciliation is a read/match operation (no ledger writes) — tag it
+// accounting:read so the POST→create default doesn't block manager/CA.
+router.post('/bank-reconciliation', requirePermission('accounting', 'read'), async (req, res, next) => {
   try {
     res.json(
       ok(

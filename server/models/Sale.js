@@ -75,7 +75,9 @@ const saleSchema = new mongoose.Schema(
     // compound index further down so each branch can independently issue
     // INV-2026-00001 without colliding with other branches in the org.
     invoiceNumber: { type: String, required: true },
-    shareToken: { type: String, index: true, sparse: true },
+    // Unguessable token backing the public bill URL. Unique so a generation
+    // collision can never serve one customer's bill under another's link.
+    shareToken: { type: String, unique: true, sparse: true },
     storeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Store', required: true, index: true },
     customerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
     customerSnapshot: {
@@ -147,8 +149,13 @@ const saleSchema = new mongoose.Schema(
     // Client-generated UUID for sales rung up offline. The sync engine retries
     // until it sees a 2xx response — without idempotency, a request that
     // commits server-side but loses its response on a flaky network would
-    // duplicate the sale. Stored sparse + unique to dedupe replays.
-    idempotencyKey: { type: String, default: null },
+    // duplicate the sale. Deduped via a PARTIAL unique index (below).
+    //
+    // No `default: null` — a sparse/partial unique index still indexes a field
+    // that is present-but-null, so defaulting to null made every keyless sale
+    // collide on the second insert. The field must be ABSENT when there's no
+    // key, hence no default and the partial filter on string type.
+    idempotencyKey: { type: String },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true },
@@ -158,7 +165,13 @@ saleSchema.index({ storeId: 1, invoiceNumber: 1 }, { unique: true });
 saleSchema.index({ storeId: 1, createdAt: -1 });
 saleSchema.index({ customerId: 1 });
 saleSchema.index({ 'customerSnapshot.phone': 1, hasWarranty: 1 });
-saleSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
+// Partial unique index: only sales that actually carry a string key are
+// indexed, so multiple keyless (walk-in/online) sales never collide, while
+// replayed offline sales (same UUID) are still deduped.
+saleSchema.index(
+  { idempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } },
+);
 
 export const Sale = mongoose.models.Sale || mongoose.model('Sale', saleSchema);
 export default Sale;

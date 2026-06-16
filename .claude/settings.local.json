@@ -88,7 +88,14 @@
       "Bash(node server/scripts/seed-accounting.js admin@example.com)",
       "Bash(node server/scripts/seed-party-settlement.js admin@example.com)",
       "Bash(node server/scripts/diagnose-party.js asian)",
-      "Bash(node server/scripts/backfill-credit-sale-ledger.js admin@example.com)"
+      "Bash(node server/scripts/backfill-credit-sale-ledger.js admin@example.com)",
+      "Bash(node --check server/services/product.service.js)",
+      "Bash(node --check server/scripts/fix-gst-inclusive.js)",
+      "Bash(rm -rf .ocrtest)",
+      "Bash(mkdir -p .ocrtest)",
+      "Bash(node .ocrtest/run.mjs)",
+      "Bash(node --input-type=module -e \"import\\('./server/app.js'\\).then\\(m => console.log\\('app loaded:', typeof m.app, '| prepareApp:', typeof m.prepareApp\\)\\).catch\\(e => { console.error\\('LOAD FAIL:', e.message\\); process.exit\\(1\\); }\\)\")",
+      "Bash(echo \"lint: $?\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\sunil\\Desktop\\Radsting Devs\\POS system-admin",

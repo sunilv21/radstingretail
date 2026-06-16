@@ -234,6 +234,15 @@ export const ProductService = {
       if (input[key] !== undefined) product[key] = input[key];
     }
 
+    // GST-inclusive flag. Handled explicitly (not in the loop above) because
+    // it's a boolean where `false` is a meaningful value the operator can set
+    // — toggling it OFF must persist just as much as toggling it ON. Without
+    // this, editing a product to mark its price GST-inclusive silently failed
+    // and the cart kept stacking GST on top of an already-inclusive price.
+    if (input.priceIncludesGst !== undefined) {
+      product.priceIncludesGst = !!input.priceIncludesGst;
+    }
+
     if (input.barcode && input.barcode !== product.barcode) {
       if (!isValidBarcode(input.barcode)) {
         throw new AppError('BARCODE_INVALID', 'Barcode must be 6–24 alphanumeric characters', 400);

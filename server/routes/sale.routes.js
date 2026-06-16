@@ -4,6 +4,7 @@ import Store from '../models/Store.js';
 import { ok, AppError } from '../utils/response.js';
 import { SaleService } from '../services/sale.service.js';
 import { sendWhatsAppText, sendWhatsAppTemplate, buildInvoiceMessage } from '../services/whatsapp.service.js';
+import { requirePermission } from '../middleware/rbac.js';
 
 const router = Router();
 
@@ -58,8 +59,10 @@ router.post('/', async (req, res, next) => {
   }
 });
 
-// E-invoice (IRN) — generate / cancel
-router.post('/:id/einvoice/generate', async (req, res, next) => {
+// E-invoice (IRN) — generate / cancel. Compliance action: not a plain
+// "create a sale" — require sales:update so a cashier (create-only) can't
+// burn IRNs, while manager/admin can.
+router.post('/:id/einvoice/generate', requirePermission('sales', 'update'), async (req, res, next) => {
   try {
     const { EInvoiceService } = await import('../services/e-invoice.service.js');
     const result = await EInvoiceService.generate({
@@ -71,7 +74,7 @@ router.post('/:id/einvoice/generate', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/:id/einvoice/cancel', async (req, res, next) => {
+router.post('/:id/einvoice/cancel', requirePermission('sales', 'update'), async (req, res, next) => {
   try {
     const { EInvoiceService } = await import('../services/e-invoice.service.js');
     const result = await EInvoiceService.cancel({
@@ -85,7 +88,7 @@ router.post('/:id/einvoice/cancel', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/:id/ewb/generate', async (req, res, next) => {
+router.post('/:id/ewb/generate', requirePermission('sales', 'update'), async (req, res, next) => {
   try {
     const { EWayBillService } = await import('../services/e-invoice.service.js');
     const result = await EWayBillService.generate({
@@ -103,7 +106,9 @@ router.post('/:id/ewb/generate', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/:id/return', async (req, res, next) => {
+// A return is a reversal — gated on sales:void (cashier create-only is blocked,
+// manager/admin allowed) so a floor cashier can't unilaterally process refunds.
+router.post('/:id/return', requirePermission('sales', 'void'), async (req, res, next) => {
   try {
     const cn = await SaleService.returnSale({
       storeId: req.user.storeId,

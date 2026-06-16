@@ -8,6 +8,11 @@ const purchaseItemSchema = new mongoose.Schema(
     receivedQty: { type: Number, default: 0 },
     purchasePrice: Number,
     gstRate: Number,
+    // When true, the purchasePrice quoted by the supplier already includes
+    // GST. The PO line decomposes that gross figure into a taxable base +
+    // CGST/SGST/IGST so ITC and supplier payable are computed correctly
+    // instead of taxing an already-taxed price.
+    priceIncludesGst: { type: Boolean, default: false },
     cgst: { type: Number, default: 0 },
     sgst: { type: Number, default: 0 },
     igst: { type: Number, default: 0 },
@@ -58,6 +63,8 @@ const receiptRefSchema = new mongoose.Schema(
         productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
         quantity: Number,
         purchasePrice: Number,
+        gstRate: Number,
+        priceIncludesGst: { type: Boolean, default: false },
         batchNumber: String,
         expiryDate: Date,
       },

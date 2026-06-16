@@ -21,7 +21,7 @@ import { bootstrapIfEmpty } from './scripts/bootstrap.js';
 import { authenticate } from './middleware/auth.js';
 import { auditMiddleware } from './middleware/audit.js';
 import { piiRedactionForReadOnly } from './middleware/piiRedaction.js';
-import { blockWritesForReadOnlyRoles } from './middleware/rbac.js';
+import { blockWritesForReadOnlyRoles, enforceResource } from './middleware/rbac.js';
 import { subscriptionGuard } from './middleware/subscriptionGuard.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { ok } from './utils/response.js';
@@ -103,6 +103,30 @@ app.use(
 );
 app.use(express.urlencoded({ extended: true }));
 
+// ---- Load-shedding backstop (opt-in) ------------------------------------
+// When MAX_INFLIGHT_REQUESTS is set, reject new requests with 503 once that
+// many are already in flight, instead of accepting unbounded work until the
+// event loop/memory is exhausted and the process crashes. Health checks are
+// always allowed so the orchestrator doesn't kill a busy-but-alive instance.
+// Default (unset/0) = disabled, so normal operation is never throttled.
+const MAX_INFLIGHT = Number(process.env.MAX_INFLIGHT_REQUESTS || 0);
+let inflight = 0;
+if (MAX_INFLIGHT > 0) {
+  app.use((req, res, next) => {
+    if (req.path === '/api/health' || req.path === '/api/ready') return next();
+    if (inflight >= MAX_INFLIGHT) {
+      res.set('Retry-After', '1');
+      return res.status(503).json(
+        // eslint-disable-next-line no-undef
+        { success: false, error: { code: 'OVERLOADED', message: 'Server busy, retry shortly' } },
+      );
+    }
+    inflight += 1;
+    res.on('close', () => { inflight -= 1; });
+    next();
+  });
+}
+
 // Tiny request logger — prints every API call with status + duration.
 app.use((req, res, next) => {
   const t0 = Date.now();
@@ -114,8 +138,24 @@ app.use((req, res, next) => {
   next();
 });
 
+// Liveness: process is up. Cheap, never touches the DB — used by the
+// orchestrator to decide whether to restart the container.
 app.get('/api/health', (_req, res) => {
   res.json(ok({ status: 'OK', timestamp: new Date().toISOString() }));
+});
+
+// Readiness: process is up AND the DB is connected. Used by the load balancer
+// to decide whether to route traffic here. Returns 503 while the DB is down so
+// a degraded instance is pulled from rotation instead of erroring every sale.
+app.get('/api/ready', (_req, res) => {
+  const dbState = mongoose.connection.readyState; // 1 = connected
+  if (dbState === 1) {
+    return res.json(ok({ status: 'READY', db: 'connected' }));
+  }
+  res.status(503).json({
+    success: false,
+    error: { code: 'NOT_READY', message: `DB not connected (state ${dbState})` },
+  });
 });
 
 app.use('/api/auth', authRoutes);
@@ -141,23 +181,33 @@ const authStack = [
   auditMiddleware,
 ];
 
-app.use('/api/products', ...authStack, productRoutes);
+// Per-resource RBAC gate (enforceResource) is appended to the shared auth
+// stack so every data router is default-deny against the matrix in
+// rbac/matrix.js. Routers that need finer granularity than method→action
+// (sales void/return, purchase grn/pay/cancel) carry explicit
+// requirePermission(...) tags on those sub-routes — see the route files.
+//   - pos / hsn are lookup helpers used during billing → resource 'products'
+//     read covers them; their POST /calculate is a read-style compute, so we
+//     mount them under 'products' (cashier has products:read).
+//   - expenses has no own matrix resource → governed by 'accounting'.
+//   - stores / users / audit / transfers already tag routes internally.
+app.use('/api/products', ...authStack, enforceResource('products'), productRoutes);
 app.use('/api/pos', ...authStack, posRoutes);
-app.use('/api/sales', ...authStack, saleRoutes);
+app.use('/api/sales', ...authStack, enforceResource('sales'), saleRoutes);
 app.use('/api/reports', ...authStack, reportRoutes);
-app.use('/api/customers', ...authStack, customerRoutes);
-app.use('/api/suppliers', ...authStack, supplierRoutes);
-app.use('/api/purchases', ...authStack, purchaseRoutes);
-app.use('/api/accounting', ...authStack, accountingRoutes);
-app.use('/api/gst', ...authStack, gstRoutes);
-app.use('/api/payroll', ...authStack, payrollRoutes);
-app.use('/api/store', ...authStack, storeRoutes);
+app.use('/api/customers', ...authStack, enforceResource('customers'), customerRoutes);
+app.use('/api/suppliers', ...authStack, enforceResource('suppliers'), supplierRoutes);
+app.use('/api/purchases', ...authStack, enforceResource('purchases'), purchaseRoutes);
+app.use('/api/accounting', ...authStack, enforceResource('accounting'), accountingRoutes);
+app.use('/api/gst', ...authStack, enforceResource('gst'), gstRoutes);
+app.use('/api/payroll', ...authStack, enforceResource('payroll'), payrollRoutes);
+app.use('/api/store', ...authStack, enforceResource('store'), storeRoutes);
 app.use('/api/stores', ...authStack, storesRoutes);
 app.use('/api/users', ...authStack, usersRoutes);
 app.use('/api/audit', ...authStack, auditRoutes);
 app.use('/api/transfers', ...authStack, transfersRoutes);
 app.use('/api/hsn', ...authStack, hsnRoutes);
-app.use('/api/expenses', ...authStack, expensesRoutes);
+app.use('/api/expenses', ...authStack, enforceResource('accounting'), expensesRoutes);
 // Support requests are intentionally OUTSIDE the subscription guard —
 // a blocked tenant must still be able to file a "please reactivate me"
 // ticket. Auth + audit are still applied so we know who raised it.

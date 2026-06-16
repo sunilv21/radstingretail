@@ -18,10 +18,18 @@ export const GSTEngine = {
       sgst = 0,
       igst = 0;
 
+    // Ex-tax value of the line BEFORE discount. For inclusive pricing the
+    // listed price already contains tax, so the ex-tax base is the price
+    // divided out by the rate. This is what the cart subtotal sums — keeping
+    // it ex-tax is what stops the grand total from adding GST a second time
+    // on top of an already-inclusive price.
+    let subtotalExTax;
+
     if (inclusive && rate > 0) {
       // Selling price already includes GST. Extract the tax out of the gross
       // so the customer pays exactly the listed (gross) amount.
       taxableAmount = round2(grossAfterDiscount / (1 + rate / 100));
+      subtotalExTax = round2(basePrice / (1 + rate / 100));
       const totalTaxFromInclusive = round2(grossAfterDiscount - taxableAmount);
       if (isSameState) {
         cgst = round2(totalTaxFromInclusive / 2);
@@ -32,6 +40,7 @@ export const GSTEngine = {
     } else {
       // Tax-exclusive pricing (historical default): tax is added on top.
       taxableAmount = grossAfterDiscount;
+      subtotalExTax = round2(basePrice);
       if (isSameState) {
         cgst = round2((taxableAmount * rate) / 200);
         sgst = round2((taxableAmount * rate) / 200);
@@ -44,6 +53,7 @@ export const GSTEngine = {
 
     return {
       basePrice: round2(basePrice),
+      subtotalExTax,
       discountAmount: round2(discountAmount),
       taxableAmount,
       gstRate: rate,
@@ -62,10 +72,18 @@ export const GSTEngine = {
       return { ...it, ...computed };
     });
 
-    const subtotal = round2(lines.reduce((s, l) => s + l.basePrice, 0));
-    const totalDiscount = round2(lines.reduce((s, l) => s + l.discountAmount, 0));
+    // Aggregate from ex-tax bases so inclusive and exclusive both balance:
+    //   grandTotal = subtotal - discount + tax  ==  Σ line.totalAmount.
+    // `subtotal` and `totalDiscount` are ex-tax. For EXCLUSIVE lines this is
+    // identical to the old behaviour (subtotalExTax === basePrice), so legacy
+    // exclusive sales are unchanged. For INCLUSIVE lines the tax is extracted
+    // from the price rather than stacked on top, so the customer pays exactly
+    // the listed selling price.
+    const subtotal = round2(lines.reduce((s, l) => s + l.subtotalExTax, 0));
+    const taxableTotal = round2(lines.reduce((s, l) => s + l.taxableAmount, 0));
     const totalTax = round2(lines.reduce((s, l) => s + l.totalTax, 0));
-    const grandTotalRaw = round2(subtotal - totalDiscount + totalTax);
+    const totalDiscount = round2(subtotal - taxableTotal);
+    const grandTotalRaw = round2(taxableTotal + totalTax);
     const grandTotal = Math.round(grandTotalRaw);
     const roundOff = round2(grandTotal - grandTotalRaw);
 

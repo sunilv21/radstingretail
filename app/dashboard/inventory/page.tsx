@@ -1924,6 +1924,9 @@ interface ReorderLine {
   sku: string;
   purchasePrice: number;
   gstRate: number;
+  // Mirrors the product master so the draft PO doesn't silently stack GST
+  // on a price the supplier already quoted as inclusive.
+  priceIncludesGst: boolean;
   hsnCode: string;
   quantity: number;
 }
@@ -1955,6 +1958,7 @@ function ReorderDialog({
     sku: p.sku,
     purchasePrice: Number(p.purchasePrice || 0),
     gstRate: Number(p.gstRate || 0),
+    priceIncludesGst: !!p.priceIncludesGst,
     hsnCode: p.hsnCode || '',
     quantity: defaultQtyFor(p),
   });
@@ -2000,12 +2004,20 @@ function ReorderDialog({
     );
   };
 
-  const subtotal = lines.reduce((s, l) => s + l.quantity * l.purchasePrice, 0);
-  const tax = lines.reduce(
-    (s, l) => s + l.quantity * l.purchasePrice * (l.gstRate / 100),
-    0,
-  );
-  const grandTotal = subtotal + tax;
+  // GST-inclusive lines have tax baked into purchasePrice — extract it
+  // instead of stacking, mirroring server/engines/gst.engine.js logic.
+  const lineTotal = (l: ReorderLine) => {
+    const gross = l.quantity * l.purchasePrice;
+    if (l.priceIncludesGst && l.gstRate > 0) {
+      const taxable = gross / (1 + l.gstRate / 100);
+      return { taxable, tax: gross - taxable, total: gross };
+    }
+    const tax = gross * (l.gstRate / 100);
+    return { taxable: gross, tax, total: gross + tax };
+  };
+  const subtotal = lines.reduce((s, l) => s + lineTotal(l).taxable, 0);
+  const tax = lines.reduce((s, l) => s + lineTotal(l).tax, 0);
+  const grandTotal = lines.reduce((s, l) => s + lineTotal(l).total, 0);
 
   const create = async () => {
     if (!supplierId) {
@@ -2028,6 +2040,7 @@ function ReorderDialog({
           orderedQty: l.quantity,
           purchasePrice: l.purchasePrice,
           gstRate: l.gstRate,
+          priceIncludesGst: l.priceIncludesGst,
         })),
       });
       toast.success(`Draft PO ${res.poNumber} created`);
@@ -2087,7 +2100,10 @@ function ReorderDialog({
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{l.name}</div>
                     <div className="text-[11px] text-muted-foreground">
-                      SKU {l.sku} · ₹{l.purchasePrice.toFixed(2)} × {l.gstRate}% GST
+                      SKU {l.sku} · ₹{l.purchasePrice.toFixed(2)} ·{' '}
+                      {l.priceIncludesGst
+                        ? `Incl. ${l.gstRate}% GST`
+                        : `+ ${l.gstRate}% GST`}
                     </div>
                   </div>
                   <Input
@@ -2098,7 +2114,7 @@ function ReorderDialog({
                     className="w-20 text-right"
                   />
                   <div className="w-24 text-right font-mono text-sm">
-                    ₹{(l.quantity * l.purchasePrice * (1 + l.gstRate / 100)).toFixed(2)}
+                    ₹{lineTotal(l).total.toFixed(2)}
                   </div>
                   {lines.length > 1 && (
                     <button
