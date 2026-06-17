@@ -208,22 +208,35 @@ export const SaleService = {
     }
 
     // --- atomic block ---
+    // Lightweight per-phase profiling, gated behind PROFILE_SALES=1 so it never
+    // costs anything in normal operation. When on, it logs the time spent in
+    // each step + the total transaction — exactly the breakdown the perf
+    // playbook asks for, without a profiler dependency.
+    const profile = process.env.PROFILE_SALES === '1';
+    const tStart = Date.now();
+    let _mark = tStart;
+    const laps = {};
+    const lap = (name) => { if (profile) { laps[name] = Date.now() - _mark; _mark = Date.now(); } };
+
     const mSession = await mongoose.startSession();
     try {
       let createdSale;
-      await mSession.withTransaction(async () => {
-        // Rebuild cart totals inside the session so we read fresh product prices
-        const cart = await BillingEngine.buildCart({
-          items: input.items,
-          storeId,
-          customerStateCode: customer.stateCode,
-          session: mSession,
-        });
-        await InventoryEngine.validateStock(cart.items, {
-          storeId,
-          session: mSession,
-          allowNegative: !!storeDoc.settings?.allowNegativeStock,
-        });
+      await mSession.withTransaction(
+        async () => {
+          // Rebuild cart totals inside the session so we read fresh product prices
+          const cart = await BillingEngine.buildCart({
+            items: input.items,
+            storeId,
+            customerStateCode: customer.stateCode,
+            session: mSession,
+          });
+          lap('buildCart');
+          await InventoryEngine.validateStock(cart.items, {
+            storeId,
+            session: mSession,
+            allowNegative: !!storeDoc.settings?.allowNegativeStock,
+          });
+          lap('validateStock');
         const { paid, change } = BillingEngine.validatePayments(input.payments || [], cart.grandTotal);
 
         // Sequential invoice number via the range-pre-allocation allocator.
@@ -365,6 +378,8 @@ export const SaleService = {
         }
         await savedSale.save({ session: mSession });
 
+        lap('saleCreate');
+
         await InventoryEngine.deductStock(cart.items, {
           storeId,
           referenceType: 'sale',
@@ -372,8 +387,10 @@ export const SaleService = {
           createdBy: userId,
           session: mSession,
         });
+        lap('deductStock');
 
         await LedgerEngine.recordSale(savedSale.toObject(), { createdBy: userId, session: mSession });
+        lap('ledger');
 
         // Bump customer outstanding for any unpaid portion. This drives the
         // party-settlement page and customer-dues reports — without it,
@@ -387,8 +404,18 @@ export const SaleService = {
           );
         }
 
+        lap('customer');
         createdSale = savedSale.toObject();
-      });
+      },
+        // Bound the commit so a stuck/contended transaction fails fast instead
+        // of hanging until Vercel's 30s function limit (→ 504). Override with
+        // MONGO_MAX_COMMIT_MS.
+        { maxCommitTimeMS: Number(process.env.MONGO_MAX_COMMIT_MS || 10000) },
+      );
+      if (profile) {
+        // eslint-disable-next-line no-console
+        console.log(`[sale] createSale ${createdSale?.invoiceNumber} total=${Date.now() - tStart}ms`, laps);
+      }
       return createdSale;
     } finally {
       await mSession.endSession();

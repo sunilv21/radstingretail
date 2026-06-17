@@ -40,6 +40,9 @@ const productSchema = new mongoose.Schema(
 productSchema.index({ storeId: 1, sku: 1 }, { unique: true });
 productSchema.index({ storeId: 1, barcode: 1 });
 productSchema.index({ storeId: 1, stock: 1 });
+// Backs the tenant-scoped `{ _id: $in, storeId }` reads in the sale hot path
+// (buildCart / deductStock) — covered lookup, no post-filter on storeId.
+productSchema.index({ storeId: 1, _id: 1 });
 
 export const Product = mongoose.models.Product || mongoose.model('Product', productSchema);
 export default Product;

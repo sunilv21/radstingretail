@@ -104,7 +104,8 @@
       "Bash(NODE_ENV=production MONGODB_URI=mongodb://x/db JWT_SECRET=\"aB3xQ9mZ7kP2wL5nR8tY1vC4\" node --input-type=module -e \"import\\('./server/config/env.js'\\).then\\(m=>console.log\\(m.assertEnv\\(\\)?'PASS runs with warning':'FAIL'\\)\\)\")",
       "Bash(node -e \"const c=require\\('crypto'\\);console.log\\('JWT_SECRET='+c.randomBytes\\(48\\).toString\\('base64'\\)\\);console.log\\('JWT_REFRESH_SECRET='+c.randomBytes\\(48\\).toString\\('base64'\\)\\);\")",
       "Bash(node --check server/engines/inventory.engine.js)",
-      "Bash(node server/scripts/algo-tests.mjs)"
+      "Bash(node server/scripts/algo-tests.mjs)",
+      "Bash(node --check server/config/database.js)"
     ],
     "additionalDirectories": [
       "c:\\Users\\sunil\\Desktop\\Radsting Devs\\POS system-admin",
