@@ -29,8 +29,13 @@ export async function connectDB() {
   // the classic 5s/19s/30s variance + FUNCTION_INVOCATION_TIMEOUT. So default
   // the pool SMALL on serverless (Vercel sets process.env.VERCEL) and large
   // only for a long-running host. Override with MONGO_MAX_POOL_SIZE.
+  // A serverless instance handles one request at a time and the sale path runs
+  // its DB ops sequentially, so a tiny pool is ideal — it minimises total
+  // Atlas connections (instances × poolSize). 50 instances × 2 = 100 sockets
+  // instead of × 5 = 250, which is what was saturating the cluster under load.
+  // Set MONGO_MAX_POOL_SIZE=1 to fan out even less on a small Atlas tier.
   const onServerless = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
-  const defaultPool = onServerless ? 5 : 20;
+  const defaultPool = onServerless ? 2 : 20;
   connecting = mongoose
     .connect(uri, {
       serverSelectionTimeoutMS: Number(process.env.MONGO_SERVER_SELECTION_MS || 8_000),

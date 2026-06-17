@@ -154,4 +154,71 @@ export const ProductUnitService = {
     await unit.save({ session });
     return unit;
   },
+
+  /**
+   * Batch variant of markSold for the sale hot path. Resolves ALL requested
+   * units in ONE query and marks them sold in ONE `bulkWrite` — instead of the
+   * old N×(findOne + save) sequential loop inside the transaction (a big cut to
+   * lock-hold time for serial-heavy carts). The guarded filter
+   * `{ _id, status: 'in_stock' }` makes the double-sell check ATOMIC: if any
+   * unit was sold concurrently, its update won't match and we abort.
+   *
+   * @param {Array} units [{ serialNoOrId, warrantyMonths }]
+   * @returns {Array} [{ unitId, serialNo }] in the SAME order as `units`,
+   *   so the caller can backfill each sale line's serialNo.
+   */
+  async markSoldMany({ storeId, units, saleId, soldAt, session }) {
+    if (!units?.length) return [];
+    const ids = [];
+    const serials = [];
+    for (const u of units) {
+      if (mongoose.isValidObjectId(u.serialNoOrId)) ids.push(u.serialNoOrId);
+      else serials.push(String(u.serialNoOrId));
+    }
+    const or = [];
+    if (ids.length) or.push({ _id: { $in: ids } });
+    if (serials.length) or.push({ serialNo: { $in: serials } });
+    const found = await ProductUnit.find({ storeId, $or: or }).session(session).lean();
+    const byId = new Map(found.map((u) => [String(u._id), u]));
+    const bySerial = new Map(found.map((u) => [u.serialNo, u]));
+
+    const ops = [];
+    const resolved = [];
+    for (const u of units) {
+      const key = String(u.serialNoOrId);
+      const unit = mongoose.isValidObjectId(u.serialNoOrId) ? byId.get(key) : bySerial.get(key);
+      if (!unit) throw new AppError('UNIT_NOT_FOUND', `Unit ${u.serialNoOrId} not found`, 404);
+      if (unit.status !== 'in_stock') {
+        throw new AppError('UNIT_ALREADY_SOLD', `Unit ${unit.serialNo} is already ${unit.status}`, 400);
+      }
+      const set = { status: 'sold', saleId, soldAt };
+      const wm = Number(u.warrantyMonths || 0);
+      if (wm > 0) {
+        const expires = new Date(soldAt);
+        expires.setMonth(expires.getMonth() + wm);
+        set.warrantyStartsAt = new Date(soldAt);
+        set.warrantyExpiresAt = expires;
+      }
+      ops.push({
+        updateOne: {
+          // Guard on status so a concurrent sale of the same unit can't
+          // double-sell — the update simply won't match and matchedCount drops.
+          filter: { _id: unit._id, storeId, status: 'in_stock' },
+          update: { $set: set },
+        },
+      });
+      resolved.push({ unitId: unit._id, serialNo: unit.serialNo });
+    }
+
+    const res = await ProductUnit.bulkWrite(ops, { session, ordered: false });
+    const matched = res.matchedCount ?? res.nMatched ?? 0;
+    if (matched < ops.length) {
+      throw new AppError(
+        'UNIT_ALREADY_SOLD',
+        'A serial-tracked unit was sold concurrently during checkout. Please retry.',
+        409,
+      );
+    }
+    return resolved;
+  },
 };

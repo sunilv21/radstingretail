@@ -161,23 +161,34 @@ export const SaleService = {
     // Resolve / upsert customer (inline customerInfo support)
     let customer;
     if (input.customerInfo && input.customerInfo.phone) {
-      customer = await Customer.findOne({ storeId, phone: input.customerInfo.phone });
-      if (customer) {
-        if (input.customerInfo.name) customer.name = input.customerInfo.name;
-        if (input.customerInfo.address) customer.address = input.customerInfo.address;
-        if (input.customerInfo.email) customer.email = input.customerInfo.email;
-        await customer.save();
-      } else {
-        customer = await Customer.create({
-          storeId,
-          name: input.customerInfo.name || 'Customer',
-          phone: input.customerInfo.phone,
-          email: input.customerInfo.email || '',
-          gstNumber: input.customerInfo.gstNumber || '',
-          stateCode: input.customerInfo.stateCode || storeDoc.stateCode || '07',
-          address: input.customerInfo.address || '',
-        });
-      }
+      // One atomic findOneAndUpdate(upsert) instead of findOne + save/create —
+      // halves the round-trips AND closes the race where two concurrent sales
+      // for a new phone both findOne→null→create a duplicate. Semantics are
+      // preserved exactly: for an EXISTING customer only name/address/email are
+      // refreshed when provided ($set); identity + defaults (gstNumber,
+      // stateCode, the 'Customer' name fallback, empty email) apply only on
+      // INSERT ($setOnInsert). A field never appears in both operators (Mongo
+      // rejects that), so $setOnInsert only carries fields not in $set.
+      const ci = input.customerInfo;
+      const $set = {};
+      if (ci.name) $set.name = ci.name;
+      if (ci.address) $set.address = ci.address;
+      if (ci.email) $set.email = ci.email;
+      const $setOnInsert = {
+        storeId,
+        phone: ci.phone,
+        gstNumber: ci.gstNumber || '',
+        stateCode: ci.stateCode || storeDoc.stateCode || '07',
+      };
+      if (!('name' in $set)) $setOnInsert.name = 'Customer';
+      if (!('email' in $set)) $setOnInsert.email = '';
+      const update = { $setOnInsert };
+      if (Object.keys($set).length) update.$set = $set;
+      customer = await Customer.findOneAndUpdate(
+        { storeId, phone: ci.phone },
+        update,
+        { new: true, upsert: true },
+      );
     } else if (input.customerId && mongoose.isValidObjectId(input.customerId)) {
       customer = await Customer.findById(input.customerId);
       if (!customer) throw new AppError('CUSTOMER_NOT_FOUND', 'Customer not found', 404);
@@ -223,17 +234,25 @@ export const SaleService = {
       let createdSale;
       await mSession.withTransaction(
         async () => {
-          // Rebuild cart totals inside the session so we read fresh product prices
+          // Compute cart totals from the store + products we ALREADY read above
+          // for warranty/serial pre-validation — no second Store.findById and no
+          // second Product.find inside the transaction. (Was the "double read"
+          // waste: 2 store + 2 product reads per sale.) Stock is authoritatively
+          // re-checked by the atomic `$inc` guard in deductStockFast, so reusing
+          // the just-pre-transaction product snapshot here is safe.
           const cart = await BillingEngine.buildCart({
             items: input.items,
             storeId,
             customerStateCode: customer.stateCode,
             session: mSession,
+            store: storeDoc,
+            products: productById,
           });
           lap('buildCart');
-          await InventoryEngine.validateStock(cart.items, {
-            storeId,
-            session: mSession,
+          // In-memory validation from the products buildCart already fetched
+          // inside this transaction — no second Product.find. The atomic guard
+          // in deductStockFast is the race-safe backstop.
+          InventoryEngine.assertStock(cart.items, {
             allowNegative: !!storeDoc.settings?.allowNegativeStock,
           });
           lap('validateStock');
@@ -361,30 +380,35 @@ export const SaleService = {
           { session: mSession },
         );
 
-        // Fill in unit rows on the already-saved line items so serial numbers
-        // persist on the invoice. We resolve each one before marking sold.
-        for (const assignment of unitAssignments) {
-          const marked = await ProductUnitService.markSold({
+        // Mark all serial-tracked units sold in ONE batched op (1 find + 1
+        // bulkWrite) instead of a sequential N×(findOne+save) loop inside the
+        // lock, then backfill each sale line's serial number from the result.
+        if (unitAssignments.length) {
+          const marked = await ProductUnitService.markSoldMany({
             storeId,
-            serialNoOrId: assignment.unitId,
+            units: unitAssignments.map((a) => ({
+              serialNoOrId: a.unitId,
+              warrantyMonths: Number(a.product.warrantyMonths || 0),
+            })),
             saleId: savedSale._id,
             soldAt: saleCreatedAt,
-            warrantyMonths: Number(assignment.product.warrantyMonths || 0),
             session: mSession,
           });
-          // Backfill the sale line with the resolved serial number
-          const line = savedSale.items.find((l) => String(l.unitId) === String(marked._id));
-          if (line) line.serialNo = marked.serialNo;
+          for (const m of marked) {
+            const line = savedSale.items.find((l) => String(l.unitId) === String(m.unitId));
+            if (line) line.serialNo = m.serialNo;
+          }
+          await savedSale.save({ session: mSession });
         }
-        await savedSale.save({ session: mSession });
 
         lap('saleCreate');
 
-        await InventoryEngine.deductStock(cart.items, {
+        await InventoryEngine.deductStockFast(cart.items, {
           storeId,
           referenceType: 'sale',
           referenceId: savedSale._id,
           createdBy: userId,
+          allowNegative: !!storeDoc.settings?.allowNegativeStock,
           session: mSession,
         });
         lap('deductStock');

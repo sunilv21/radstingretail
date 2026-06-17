@@ -4,18 +4,34 @@ import { AppError } from '../utils/response.js';
 import { GSTEngine } from './gst.engine.js';
 
 export const BillingEngine = {
-  async buildCart({ items, storeId, customerStateCode, session }) {
+  /**
+   * @param {object}   opts
+   * @param {object}  [opts.store]    Pre-fetched store doc — pass it to AVOID a
+   *   second `Store.findById` when the caller already read it (the sale hot
+   *   path does, for warranty/serial pre-validation). Halves the per-sale store
+   *   reads under load.
+   * @param {Map|Array} [opts.products] Pre-fetched products (Map keyed by string
+   *   `_id`, or an array). Same idea — skip the second `Product.find`. Stock is
+   *   authoritatively re-checked by the atomic guard in deductStockFast, so a
+   *   just-pre-transaction snapshot here is safe.
+   */
+  async buildCart({ items, storeId, customerStateCode, session, store, products }) {
     if (!Array.isArray(items) || items.length === 0) {
       throw new AppError('CART_EMPTY', 'Cart cannot be empty', 400);
     }
-    const storeDoc = await Store.findById(storeId).session(session || null).lean();
+    const storeDoc = store || (await Store.findById(storeId).session(session || null).lean());
     if (!storeDoc) throw new AppError('STORE_NOT_FOUND', 'Store not found', 404);
 
-    const productIds = items.map((i) => i.productId);
-    const products = await Product.find({ _id: { $in: productIds }, storeId })
-      .session(session || null)
-      .lean();
-    const byId = new Map(products.map((p) => [String(p._id), p]));
+    let byId;
+    if (products) {
+      byId = products instanceof Map ? products : new Map(products.map((p) => [String(p._id), p]));
+    } else {
+      const productIds = items.map((i) => i.productId);
+      const fetched = await Product.find({ _id: { $in: productIds }, storeId })
+        .session(session || null)
+        .lean();
+      byId = new Map(fetched.map((p) => [String(p._id), p]));
+    }
 
     // Store-level fallback for products that don't set the flag explicitly.
     // settings.defaultGSTMode: 'inclusive' | 'exclusive' (exclusive default).
@@ -59,6 +75,13 @@ export const BillingEngine = {
         discountType: it.discountType || 'flat',
         gstRate: Number(product.gstRate || 0),
         priceIncludesGst,
+        // Transient, non-persisted carriers (Mongoose strict mode drops them on
+        // Sale.create): let the sale path validate stock + record stock-movement
+        // before/after values WITHOUT a second DB read of the same products.
+        _stock: Number(product.stock || 0),
+        _isActive: product.isActive !== false,
+        _name: product.name,
+        _unit: product.unit,
       };
     });
 
