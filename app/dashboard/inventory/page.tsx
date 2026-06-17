@@ -140,8 +140,13 @@ const EMPTY_FORM: FormState = {
 
 export default function InventoryPage() {
   const router = useRouter();
-  const [products, setProducts] = useState<Product[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Seed from the in-memory cache so returning to this page renders instantly
+  // (no skeleton flash, no refetch wait). `loadProducts` still revalidates in
+  // the background.
+  const PRODUCTS_PATH = '/products?limit=200';
+  const cachedProducts = api.peek<Product[]>(PRODUCTS_PATH);
+  const [products, setProducts] = useState<Product[]>(cachedProducts ?? []);
+  const [loading, setLoading] = useState(!cachedProducts);
   const [searchTerm, setSearchTerm] = useState('');
   // Reorder dialog state — opens with a single low-stock product
   // pre-filled. The dialog lets the user batch in more low-stock items
@@ -176,9 +181,11 @@ export default function InventoryPage() {
   const [verifyOpen, setVerifyOpen] = useState<{ product: Product; row?: HsnAuditRow } | null>(null);
 
   const loadProducts = async () => {
-    setLoading(true);
+    // Only show the skeleton when we have nothing yet — a revisit with cached
+    // data revalidates silently in the background.
+    if (api.peek<Product[]>(PRODUCTS_PATH) === undefined) setLoading(true);
     try {
-      const rows = await api.get<Product[]>('/products?limit=200');
+      const rows = await api.get<Product[]>(PRODUCTS_PATH);
       setProducts(rows);
       // Fire-and-forget HSN audit prefetch — if it fails we just don't
       // render the inline pill, no toast spam.

@@ -1,0 +1,136 @@
+{
+  "info": {
+    "name": "Radsting POS + ERP",
+    "_postman_id": "radsting-pos-erp-collection",
+    "description": "Login + authenticated API testing for the Radsting POS + ERP.\n\nHOW TO USE\n1. Import this file into Postman (Import → File).\n2. Open the collection → Variables tab → set `baseUrl`, `email`, `password`.\n   - Local:      http://localhost:5000/api\n   - Production:  https://radstingretail.vercel.app/api\n3. Run **Auth › Login (tenant)**. Its Tests script auto-saves the JWT into the\n   `token` variable.\n4. Every other request inherits Bearer {{token}} from the collection auth — just\n   send them, no manual token copying.\n\nThe API response envelope is { success, data, timestamp }; the login token is at\nresponse.data.token.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5000/api", "type": "string" },
+    { "key": "email", "value": "admin@example.com", "type": "string" },
+    { "key": "password", "value": "password123", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "superEmail", "value": "radsting@pos.com", "type": "string" },
+    { "key": "superPassword", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login (tenant)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Save the JWT so every other request can use {{token}}.",
+                  "pm.test('200 OK', () => pm.response.code === 200);",
+                  "const body = pm.response.json();",
+                  "const token = body && body.data && body.data.token;",
+                  "pm.test('token returned', () => !!token);",
+                  "if (token) {",
+                  "  pm.collectionVariables.set('token', token);",
+                  "  // also stash the user for convenience",
+                  "  if (body.data.user) pm.collectionVariables.set('userJson', JSON.stringify(body.data.user));",
+                  "  console.log('Saved token (', token.length, 'chars )');",
+                  "} else {",
+                  "  console.warn('No token in response:', pm.response.text());",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] },
+            "description": "Tenant POS login. Looks up tenantadmins then users. Returns { token, user }."
+          }
+        },
+        {
+          "name": "Login (super-admin / vendor)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.code === 200);",
+                  "const body = pm.response.json();",
+                  "const token = body && body.data && body.data.token;",
+                  "if (token) { pm.collectionVariables.set('token', token); console.log('Saved super-admin token'); }",
+                  "else { console.warn('No token:', pm.response.text()); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{superEmail}}\",\n  \"password\": \"{{superPassword}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/auth/super-admin/login", "host": ["{{baseUrl}}"], "path": ["auth", "super-admin", "login"] },
+            "description": "Vendor/platform login. Only queries the superadmins collection."
+          }
+        },
+        {
+          "name": "Me (current user)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/auth/me", "host": ["{{baseUrl}}"], "path": ["auth", "me"] },
+            "description": "Returns the signed-in user. Uses Bearer {{token}} from the collection auth."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sample authenticated reads",
+      "item": [
+        {
+          "name": "Health (no auth)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"] }
+          }
+        },
+        {
+          "name": "Products",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/products?limit=20", "host": ["{{baseUrl}}"], "path": ["products"], "query": [{ "key": "limit", "value": "20" }] }
+          }
+        },
+        {
+          "name": "Sales",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/sales?limit=20", "host": ["{{baseUrl}}"], "path": ["sales"], "query": [{ "key": "limit", "value": "20" }] }
+          }
+        },
+        {
+          "name": "Store profile",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/store/me", "host": ["{{baseUrl}}"], "path": ["store", "me"] }
+          }
+        }
+      ]
+    }
+  ]
+}

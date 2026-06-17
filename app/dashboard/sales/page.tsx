@@ -21,10 +21,14 @@ import { toast } from 'sonner';
 import { billShareUrl, whatsappLink, mailtoLink, copyToClipboard } from '@/lib/share-invoice';
 import { printInvoice } from '@/lib/print-invoice';
 
+const SALES_PATH = '/sales?limit=100';
+
 export default function SalesHistoryPage() {
-  const [sales, setSales] = useState<Sale[]>([]);
-  const [store, setStore] = useState<StoreInfo | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Seed from cache so revisiting renders instantly (no skeleton flash).
+  const cachedSales = api.peek<Sale[]>(SALES_PATH);
+  const [sales, setSales] = useState<Sale[]>(cachedSales ?? []);
+  const [store, setStore] = useState<StoreInfo | null>(api.peek<StoreInfo>('/store/me') ?? null);
+  const [loading, setLoading] = useState(!cachedSales);
   const [searchTerm, setSearchTerm] = useState('');
   // Status filter pills. 'all' shows everything; the rest narrow by
   // either paymentStatus (paid / partial / credit) or top-level
@@ -38,10 +42,10 @@ export default function SalesHistoryPage() {
   const [payFor, setPayFor] = useState<Sale | null>(null);
 
   const load = async () => {
-    setLoading(true);
+    if (api.peek<Sale[]>(SALES_PATH) === undefined) setLoading(true);
     try {
       const [rows, s] = await Promise.all([
-        api.get<Sale[]>('/sales?limit=100'),
+        api.get<Sale[]>(SALES_PATH),
         api.get<StoreInfo>('/store/me').catch(() => null),
       ]);
       setSales(rows);

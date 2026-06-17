@@ -174,10 +174,14 @@ interface OcrDraft {
   rawText?: string;
 }
 
+const PO_PATH = '/purchases?limit=100';
+
 export default function PurchasesPage() {
-  const [purchases, setPurchases] = useState<PurchaseOrder[]>([]);
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
+  // Seed from cache so revisiting renders instantly (no skeleton flash).
+  const cachedPo = api.peek<PurchaseOrder[]>(PO_PATH);
+  const [purchases, setPurchases] = useState<PurchaseOrder[]>(cachedPo ?? []);
+  const [suppliers, setSuppliers] = useState<Supplier[]>(api.peek<Supplier[]>('/suppliers') ?? []);
+  const [products, setProducts] = useState<Product[]>(api.peek<Product[]>('/products?limit=200') ?? []);
   // List filters — status pills + supplier dropdown + free-text
   // search across PO number / supplier name / GSTIN.
   const [statusFilter, setStatusFilter] = useState<
@@ -185,7 +189,7 @@ export default function PurchasesPage() {
   >('all');
   const [supplierFilter, setSupplierFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cachedPo);
   const [createOpen, setCreateOpen] = useState(false);
   const [ocrDraft, setOcrDraft] = useState<OcrDraft | null>(null);
   const [grnPo, setGrnPo] = useState<PurchaseOrder | null>(null);
@@ -195,10 +199,10 @@ export default function PurchasesPage() {
   const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
 
   const load = async () => {
-    setLoading(true);
+    if (api.peek<PurchaseOrder[]>(PO_PATH) === undefined) setLoading(true);
     try {
       const [po, sup, prod] = await Promise.all([
-        api.get<PurchaseOrder[]>('/purchases?limit=100'),
+        api.get<PurchaseOrder[]>(PO_PATH),
         api.get<Supplier[]>('/suppliers'),
         api.get<Product[]>('/products?limit=200'),
       ]);

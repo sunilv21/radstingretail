@@ -237,6 +237,17 @@ export const api = {
     }),
   /** Manually drop cached GETs (e.g. force-refresh a screen). */
   invalidate: invalidateCache,
+  /**
+   * SYNCHRONOUS cached read — returns a fresh cached value or undefined,
+   * WITHOUT any network call. Use it to seed a page's initial state so a
+   * revisited screen renders instantly (no loading skeleton flash). Pair with
+   * a background `api.get` to revalidate.
+   */
+  peek: <T>(path: string): T | undefined => {
+    const hit = getCache.get(path);
+    if (hit && Date.now() - hit.at < hit.ttl) return hit.value as T;
+    return undefined;
+  },
 };
 
 // Legacy helpers kept for existing pages

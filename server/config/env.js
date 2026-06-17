@@ -28,13 +28,23 @@ export function validateEnv() {
   const secret = process.env.JWT_SECRET;
   if (!secret) {
     errors.push('JWT_SECRET is required.');
-  } else if (secret.length < 32) {
-    // auth.js enforces ≥16 as a hard floor; production should use ≥32.
-    (isProd() ? errors : warnings).push(
-      `JWT_SECRET should be at least 32 random characters (current: ${secret.length}).`,
-    );
-  } else if (/change-me|your-secret-key|secret|password/i.test(secret)) {
-    errors.push('JWT_SECRET looks like a placeholder — set a real random value.');
+  } else {
+    // Hard floor (always): below 16 chars is genuinely insecure. Mirrors the
+    // floor in middleware/auth.js.
+    if (secret.length < 16) {
+      errors.push(`JWT_SECRET is too short (${secret.length} chars); use at least 32 random characters.`);
+    }
+    // Known SHIPPED placeholders only — anchored so we don't false-positive on
+    // a real random secret that merely contains the substring "secret". These
+    // defaults must never reach production, so blocking is correct.
+    if (/change-?me|your-secret-key|^(secret|password|changeit|placeholder|test|dev)$/i.test(secret)) {
+      errors.push('JWT_SECRET is a placeholder — set a real random value (e.g. `openssl rand -base64 48`).');
+    }
+    // Length 16–31: secure enough to RUN, but nudge toward ≥32. A warning, not
+    // a hard fail — a short-but-real secret should never take down billing.
+    if (secret.length >= 16 && secret.length < 32) {
+      warnings.push(`JWT_SECRET should be ≥32 chars for production (current: ${secret.length}).`);
+    }
   }
 
   // ---- recommended in production ----
