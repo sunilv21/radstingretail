@@ -29,61 +29,62 @@ export const InventoryEngine = {
   },
 
   async deductStock(items, { storeId, referenceType, referenceId, createdBy, session }) {
+    // Atomic `$inc` instead of read-modify-save: one round-trip per item (not
+    // two), and — crucially under concurrency — it can't lose updates or pile
+    // up WriteConflicts the way a findOne+save read-modify-write does. Stock
+    // movements are batched into a single insertMany at the end to cut the
+    // transaction's write count. All within the caller's session (atomic).
+    const movements = [];
     for (const it of items) {
-      const product = await Product.findOne({ _id: it.productId, storeId }).session(session);
-      if (!product) {
+      const updated = await Product.findOneAndUpdate(
+        { _id: it.productId, storeId },
+        { $inc: { stock: -it.quantity } },
+        { session, new: true },
+      );
+      if (!updated) {
         throw new AppError('PRODUCT_NOT_FOUND', `Product ${it.productId} not found`, 404);
       }
-      const previousStock = product.stock;
-      product.stock = previousStock - it.quantity;
-      await product.save({ session });
-
-      await StockMovement.create(
-        [
-          {
-            storeId,
-            productId: product._id,
-            type: 'out',
-            quantity: it.quantity,
-            previousStock,
-            newStock: product.stock,
-            referenceType,
-            referenceId,
-            reason: `${referenceType} ${referenceId}`,
-            createdBy,
-          },
-        ],
-        { session },
-      );
+      const newStock = updated.stock;
+      movements.push({
+        storeId,
+        productId: updated._id,
+        type: 'out',
+        quantity: it.quantity,
+        previousStock: newStock + it.quantity,
+        newStock,
+        referenceType,
+        referenceId,
+        reason: `${referenceType} ${referenceId}`,
+        createdBy,
+      });
     }
+    if (movements.length) await StockMovement.insertMany(movements, { session });
   },
 
   async addStock(items, { storeId, referenceType, referenceId, createdBy, reason, session }) {
+    const movements = [];
     for (const it of items) {
-      const product = await Product.findOne({ _id: it.productId, storeId }).session(session);
-      if (!product) continue;
-      const previousStock = product.stock;
-      product.stock = previousStock + it.quantity;
-      await product.save({ session });
-
-      await StockMovement.create(
-        [
-          {
-            storeId,
-            productId: product._id,
-            type: 'in',
-            quantity: it.quantity,
-            previousStock,
-            newStock: product.stock,
-            referenceType,
-            referenceId,
-            reason: reason || `${referenceType} ${referenceId}`,
-            createdBy,
-          },
-        ],
-        { session },
+      const updated = await Product.findOneAndUpdate(
+        { _id: it.productId, storeId },
+        { $inc: { stock: it.quantity } },
+        { session, new: true },
       );
+      if (!updated) continue; // unknown product — skip (matches prior behaviour)
+      const newStock = updated.stock;
+      movements.push({
+        storeId,
+        productId: updated._id,
+        type: 'in',
+        quantity: it.quantity,
+        previousStock: newStock - it.quantity,
+        newStock,
+        referenceType,
+        referenceId,
+        reason: reason || `${referenceType} ${referenceId}`,
+        createdBy,
+      });
     }
+    if (movements.length) await StockMovement.insertMany(movements, { session });
   },
 
   async adjustStock({ productId, newQuantity, reason, storeId, createdBy }) {
